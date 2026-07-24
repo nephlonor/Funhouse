@@ -643,6 +643,19 @@ function buildModel(id){
 
   const ears = (m, x, y, z, rot, s) => add(CON, m, [x,y,z], rot, s);
 
+  /* a thin cylinder grown FROM a pivot point outward along dir (e.g. a whisker) */
+  const spoke = (m, pivot, dir, len, rad) => {
+    const me = new T.Mesh(CYL, m);
+    me.scale.set(rad, len, rad);
+    me.position.set(0, len/2, 0);          /* extends along +Y from the origin */
+    const h = new T.Group();
+    h.add(me);
+    h.position.set(pivot[0], pivot[1], pivot[2]);
+    h.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),
+      new T.Vector3(dir[0], dir[1], dir[2]).normalize());
+    g.add(h); return h;
+  };
+
   switch(id){
     case 1: { /* unicorn */
       add(CON, gold, [0,1.25,0.35], [0.28,0,0], [0.14,0.85,0.14]);
@@ -677,9 +690,10 @@ function buildModel(id){
         ears(pink, s*0.5,1.0,0.09,null,[0.15,0.28,0.08]);
       }
       add(SPH, pink, [0,0.16,0.42], null, [0.1,0.08,0.08]);
-      const wm = mat(0xffffff);
+      const wm = mat(0xf2f2f2);
+      /* three whiskers per side, fanned out from the muzzle */
       for(const s of [-1,1]) for(let i=-1;i<=1;i++)
-        add(CYL, wm, [s*0.62,0.06+i*0.09,0.34], [0,0,Math.PI/2 + i*0.12*s], [0.008,0.6,0.008]);
+        spoke(wm, [s*0.16,0.05,0.46], [s*1.0, i*0.45, 0.14], 0.62, 0.009);
       break;
     }
     case 5: { /* bunny */
@@ -688,6 +702,9 @@ function buildModel(id){
         add(CAP, pink,  [s*0.34,1.6,0.12], [0,0,s*0.05], [0.12,0.5,0.12]);
       }
       add(SPH, pink, [0,0.16,0.42], null, [0.1,0.08,0.08]);
+      const bw = mat(0xf2f2f2);
+      for(const s of [-1,1]) for(let i=-1;i<=1;i++)
+        spoke(bw, [s*0.12,0.06,0.46], [s*1.0, i*0.4, 0.14], 0.5, 0.008);
       break;
     }
     case 6: { /* pig */
