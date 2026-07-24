@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Funhouse — live face filters</title>
+<style>
+  :root{
+    --ink:#170C1B;
+    --plum:#2A1430;
+    --marigold:#FFB627;
+    --cyan:#3DDCFF;
+    --bone:#F6EFE6;
+    --dim:rgba(246,239,230,.55);
+    --safe-b:env(safe-area-inset-bottom, 0px);
+    --safe-t:env(safe-area-inset-top, 0px);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);color:var(--bone);
+    font-family:"Avenir Next Condensed","Futura",-apple-system,"Segoe UI",system-ui,sans-serif;
+    touch-action:manipulation;-webkit-user-select:none;user-select:none}
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block;background:#000}
+  video{position:fixed;width:2px;height:2px;opacity:.01;pointer-events:none;top:0;left:0}
+
+  /* ---- top bar ---- */
+  .top{position:fixed;top:calc(var(--safe-t) + 10px);left:12px;right:12px;display:flex;
+    align-items:center;gap:8px;z-index:5;pointer-events:none}
+  .badge{pointer-events:auto;display:flex;align-items:center;gap:6px;
+    background:rgba(23,12,27,.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border:1px solid rgba(246,239,230,.14);border-radius:999px;padding:6px 12px;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+  .dot{width:7px;height:7px;border-radius:50%;background:#7a5f2a;transition:background .3s, box-shadow .3s}
+  .dot.on{background:var(--marigold);box-shadow:0 0 10px var(--marigold)}
+  .spacer{flex:1}
+  .iconbtn{pointer-events:auto;width:40px;height:40px;border-radius:50%;border:1px solid rgba(246,239,230,.14);
+    background:rgba(23,12,27,.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    color:var(--bone);font-size:17px;display:grid;place-items:center;cursor:pointer}
+  .iconbtn:active{transform:scale(.92)}
+
+  /* ---- bottom deck ---- */
+  .deck{position:fixed;left:0;right:0;bottom:0;z-index:5;padding-bottom:calc(var(--safe-b) + 10px);
+    background:linear-gradient(to top, rgba(23,12,27,.92) 55%, rgba(23,12,27,0));
+    padding-top:26px}
+  .rail{display:flex;gap:7px;overflow-x:auto;overflow-y:hidden;padding:0 12px 9px;
+    scrollbar-width:none;scroll-snap-type:x proximity}
+  .rail::-webkit-scrollbar{display:none}
+  .chip{flex:0 0 auto;scroll-snap-align:center;border:1px solid rgba(246,239,230,.16);
+    background:rgba(246,239,230,.06);color:var(--bone);border-radius:13px;padding:7px 12px 8px;
+    font:inherit;font-size:12px;letter-spacing:.09em;text-transform:uppercase;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;gap:2px;min-width:60px;line-height:1;
+    transition:background .15s,border-color .15s,transform .12s}
+  .chip .gl{font-size:17px;line-height:1.1;font-family:-apple-system,"Segoe UI Emoji",system-ui}
+  .chip:active{transform:scale(.94)}
+  .chip[aria-pressed="true"]{background:var(--marigold);border-color:var(--marigold);color:var(--ink);font-weight:600}
+  .rail.tint .chip[aria-pressed="true"]{background:var(--cyan);border-color:var(--cyan)}
+  .rail.tint .chip{padding:7px 13px;min-width:0}
+
+  .bar{display:flex;align-items:center;justify-content:space-between;padding:6px 24px 2px}
+  .shutter{width:74px;height:74px;border-radius:50%;border:4px solid var(--bone);background:transparent;
+    display:grid;place-items:center;cursor:pointer;padding:0}
+  .shutter i{display:block;width:58px;height:58px;border-radius:50%;background:var(--bone);
+    transition:transform .1s}
+  .shutter:active i{transform:scale(.86)}
+  .side{width:52px;text-align:center;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+  .side b{display:block;font-size:19px;color:var(--bone);font-weight:600;letter-spacing:0}
+
+  /* ---- start / error screens ---- */
+  .veil{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:26px;
+    background:radial-gradient(120% 90% at 50% 12%, var(--plum), var(--ink) 70%)}
+  .veil.gone{display:none}
+  .card{max-width:340px;text-align:center}
+  .card h1{font-size:clamp(42px,15vw,68px);line-height:.88;margin:0 0 14px;letter-spacing:-.02em;
+    text-transform:uppercase;font-weight:700;
+    background:linear-gradient(100deg,var(--marigold),var(--cyan));-webkit-background-clip:text;
+    background-clip:text;color:transparent;transform:scaleY(1.12)}
+  .card p{color:var(--dim);font-size:15px;line-height:1.5;margin:0 0 22px;letter-spacing:.01em}
+  .go{font:inherit;font-size:15px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;
+    background:var(--marigold);color:var(--ink);border:0;border-radius:999px;padding:16px 34px;cursor:pointer}
+  .go:active{transform:scale(.96)}
+  .fine{margin-top:18px;font-size:11px;color:rgba(246,239,230,.35);letter-spacing:.06em}
+
+  /* ---- saved photo sheet ---- */
+  .sheet{position:fixed;inset:0;z-index:30;background:rgba(23,12,27,.94);display:none;
+    flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px}
+  .sheet.show{display:flex}
+  .sheet img{max-width:100%;max-height:66vh;border-radius:14px;border:1px solid rgba(246,239,230,.2)}
+  .sheet p{margin:0;color:var(--dim);font-size:12px;letter-spacing:.1em;text-transform:uppercase;text-align:center}
+  .sheet .row{display:flex;gap:10px}
+  .flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:25}
+  @media (prefers-reduced-motion:no-preference){
+    .flash.fire{animation:fl .32s ease-out}
+    @keyframes fl{0%{opacity:.9}100%{opacity:0}}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+<video id="vid" playsinline webkit-playsinline muted autoplay
+       disablepictureinpicture disableremoteplayback x-webkit-airplay="deny"
+       preload="none" tabindex="-1" aria-hidden="true"></video>
+<div class="flash" id="flash"></div>
+
+<div class="top">
+  <div class="badge"><span class="dot" id="dot"></span><span id="status">no face</span></div>
+  <span class="spacer"></span>
+  <button class="iconbtn" id="flip" title="Switch camera">⇄</button>
+</div>
+
+<div class="deck">
+  <div class="rail tint" id="tints"></div>
+  <div class="rail" id="warps"></div>
+  <div class="bar">
+    <span class="side">fps<b id="fps">–</b></span>
+    <button class="shutter" id="shot" aria-label="Take photo"><i></i></button>
+    <span class="side" id="modeName">normal</span>
+  </div>
+</div>
+
+<div class="veil" id="veil">
+  <div class="card">
+    <h1>Fun<br>house</h1>
+    <p>Live camera warps that track your face. Everything runs on-device in one HTML file.</p>
+    <button class="go" id="start">Turn on camera</button>
+    <div class="fine" id="fine">Needs HTTPS · front camera · sound off</div>
+  </div>
+</div>
+
+<div class="sheet" id="sheet">
+  <img id="shotImg" alt="Your photo">
+  <p>Press and hold the picture to save it to Photos</p>
+  <div class="row">
+    <button class="go" id="shareBtn" style="background:var(--cyan)">Share</button>
+    <button class="go" id="closeSheet" style="background:transparent;color:var(--bone);border:1px solid rgba(246,239,230,.3)">Back</button>
+  </div>
+</div>
+
+<script type="module">
+/* ============================================================
+   Funhouse — WebGL1 face-tracked camera warps, single file.
+   Face landmarks: MediaPipe Tasks Vision (loaded lazily, optional).
+   If the model can't load, everything still works using an
+   assumed head position in the centre of the frame.
+   ============================================================ */
+
+const V = document.getElementById('vid');
+const C = document.getElementById('gl');
+const statusEl = document.getElementById('status');
+const dotEl = document.getElementById('dot');
+const fpsEl = document.getElementById('fps');
+const modeNameEl = document.getElementById('modeName');
+
+const WARPS = [
+  { id:0,  g:'🙂', n:'none'    },
+  { id:1,  g:'🎈', n:'balloon' },
+  { id:2,  g:'🫧', n:'shrink'  },
+  { id:3,  g:'👀', n:'bug eyes'},
+  { id:4,  g:'😮', n:'big mouth'},
+  { id:5,  g:'👽', n:'alien'   },
+  { id:6,  g:'🐸', n:'squash'  },
+  { id:7,  g:'🥖', n:'stretch' },
+  { id:8,  g:'🌀', n:'swirl'   },
+  { id:9,  g:'〰️', n:'ripple'  },
+  { id:10, g:'🤪', n:'googly'  },
+  { id:11, g:'🥔', n:'potato'  },
+  { id:12, g:'🦋', n:'twin'    },
+  { id:13, g:'🐽', n:'snout'   },
+  { id:14, g:'🐹', n:'cheeks'  },
+  { id:15, g:'🍦', n:'melt'    },
+  { id:16, g:'🔮', n:'fisheye' },
+  { id:17, g:'🧊', n:'pixel'   },
+  { id:18, g:'❄️', n:'kaleido' },
+];
+const TINTS = [
+  { id:0, n:'raw'      },
+  { id:1, n:'clarity'  },
+  { id:2, n:'mono'     },
+  { id:3, n:'sepia'    },
+  { id:4, n:'lo-fi'    },
+  { id:5, n:'thermal'  },
+  { id:6, n:'vhs'      },
+  { id:7, n:'comic'    },
+];
+
+const state = { warp:1, tint:0, facing:'user', mirror:true, grab:false };
+
+/* ---------- chips ---------- */
+function buildRail(el, items, key, withGlyph){
+  items.forEach(it=>{
+    const b = document.createElement('button');
+    b.className='chip'; b.type='button';
+    b.setAttribute('aria-pressed', String(state[key]===it.id));
+    b.innerHTML = (withGlyph?`<span class="gl">${it.g}</span>`:'') + `<span>${it.n}</span>`;
+    b.onclick = ()=>{
+      state[key]=it.id;
+      [...el.children].forEach((c,i)=>c.setAttribute('aria-pressed', String(items[i].id===it.id)));
+      if(key==='warp') modeNameEl.textContent = it.n;
+      b.scrollIntoView({behavior:'smooth', inline:'center', block:'nearest'});
+    };
+    el.appendChild(b);
+  });
+}
+buildRail(document.getElementById('warps'), WARPS, 'warp', true);
+buildRail(document.getElementById('tints'), TINTS, 'tint', false);
+modeNameEl.textContent = WARPS[state.warp].n;
+
+/* ---------- GL ---------- */
+const gl = C.getContext('webgl', {alpha:false, antialias:false, preserveDrawingBuffer:false, powerPreference:'high-performance'});
+if(!gl){ fail('This browser has no WebGL. Try Safari or Chrome.'); }
+
+const VS = `
+attribute vec2 aPos;
+varying vec2 vScr;
+void main(){
+  vScr = vec2(aPos.x*0.5+0.5, 0.5-aPos.y*0.5);   /* y down, like the video */
+  gl_Position = vec4(aPos,0.0,1.0);
+}`;
+
+const FS = `
+precision highp float;
+varying vec2 vScr;
+uniform sampler2D uTex;
+uniform vec2  uCover;      /* cover-fit scale */
+uniform float uAsp;        /* video w/h, for round shapes */
+uniform float uMirror;
+uniform float uTime;
+uniform int   uWarp;
+uniform int   uTint;
+uniform vec3  uEyeA;       /* xy centre, z radius */
+uniform vec3  uEyeB;
+uniform vec3  uMouth;
+uniform vec3  uFace;
+uniform float uHas;
+
+vec2 A(vec2 d){ return d*vec2(uAsp,1.0); }
+vec2 U(vec2 d){ return d/vec2(uAsp,1.0); }
+
+/* radial magnify (p>1) or pinch (p<1) inside radius r */
+vec2 bulge(vec2 uv, vec2 c, float r, float p){
+  vec2 d = A(uv-c); float l = length(d);
+  if(l >= r || l < 1e-6) return uv;
+  return c + U(normalize(d) * pow(l/r, p) * r);
+}
+vec2 scaleAt(vec2 uv, vec2 c, vec2 k, float r){
+  vec2 d = A(uv-c);
+  float w = 1.0 - smoothstep(r*0.45, r, length(d));
+  return c + U(mix(d, d/k, w));
+}
+vec2 swirl(vec2 uv, vec2 c, float r, float amt){
+  vec2 d = A(uv-c); float l = length(d);
+  if(l >= r) return uv;
+  float a = amt * pow(1.0 - l/r, 2.0);
+  float s = sin(a), co = cos(a);
+  return c + U(vec2(d.x*co - d.y*s, d.x*s + d.y*co));
+}
+float hash(float x){ return fract(sin(x*127.1)*43758.5453); }
+
+vec3 grab(vec2 uv){ return texture2D(uTex, clamp(uv,0.001,0.999)).rgb; }
+
+void main(){
+  vec2 uv = (vScr-0.5)*uCover + 0.5;
+  if(uMirror > 0.5) uv.x = 1.0 - uv.x;
+
+  vec2 c = uFace.xy; float R = uFace.z;
+  float t = uTime;
+
+  if(uWarp==1)  uv = bulge(uv, c, R*1.45, 2.15);
+  else if(uWarp==2)  uv = bulge(uv, c, R*1.9, 0.48);
+  else if(uWarp==3){ uv = bulge(uv, uEyeA.xy, uEyeA.z*2.6, 2.7);
+                     uv = bulge(uv, uEyeB.xy, uEyeB.z*2.6, 2.7); }
+  else if(uWarp==4){ uv = scaleAt(uv, uMouth.xy, vec2(1.55,2.3), uMouth.z*3.4); }
+  else if(uWarp==5){
+    float y = clamp((uv.y-(c.y-R))/(2.0*R), 0.0, 1.0);
+    float k = mix(1.75, 0.5, y*y);
+    vec2 d = A(uv-c);
+    float w = 1.0 - smoothstep(R*0.7, R*1.5, length(d));
+    d.x = mix(d.x, d.x/k, w);
+    uv = c + U(d);
+    uv = bulge(uv, c - vec2(0.0, R*0.45), R*0.9, 1.5);
+  }
+  else if(uWarp==6)  uv = scaleAt(uv, c, vec2(1.7,0.72), R*1.7);
+  else if(uWarp==7)  uv = scaleAt(uv, c, vec2(0.62,1.85), R*1.9);
+  else if(uWarp==8)  uv = swirl(uv, c, R*1.5, 2.6);
+  else if(uWarp==9)  uv += vec2(0.016*sin(uv.y*26.0 + t*3.4), 0.010*sin(uv.x*20.0 - t*2.6));
+  else if(uWarp==10){
+    float w1 = 2.2 + 0.9*sin(t*5.0);
+    float w2 = 2.2 + 0.9*sin(t*5.0 + 2.1);
+    vec2 j1 = vec2(sin(t*3.1), cos(t*2.3))*uEyeA.z*0.35;
+    vec2 j2 = vec2(cos(t*2.7), sin(t*3.5))*uEyeB.z*0.35;
+    uv = bulge(uv, uEyeA.xy + U(j1), uEyeA.z*2.4, w1);
+    uv = bulge(uv, uEyeB.xy + U(j2), uEyeB.z*2.4, w2);
+    uv = scaleAt(uv, uMouth.xy, vec2(1.2, 1.5+0.5*sin(t*4.0)), uMouth.z*3.0);
+  }
+  else if(uWarp==11){
+    for(int i=0;i<4;i++){
+      float f = float(i);
+      float a = t*0.6 + f*1.9;
+      vec2 p = c + U(vec2(cos(a), sin(a*1.3))*R*0.55);
+      uv = bulge(uv, p, R*(0.5+0.1*f), 1.9);
+    }
+  }
+  else if(uWarp==12){
+    float d = uv.x - c.x;
+    uv.x = c.x - abs(d);
+    uv = bulge(uv, c, R*1.2, 1.35);
+  }
+  else if(uWarp==13){
+    vec2 nose = mix(uMouth.xy, c, 0.55);
+    uv = bulge(uv, nose, R*0.55, 2.9);
+  }
+  else if(uWarp==14){
+    vec2 l = c + U(vec2(-R*0.85, R*0.25));
+    vec2 r2 = c + U(vec2( R*0.85, R*0.25));
+    uv = bulge(uv, l, R*0.8, 2.4);
+    uv = bulge(uv, r2, R*0.8, 2.4);
+  }
+  else if(uWarp==15){
+    float drip = hash(floor(uv.x*46.0));
+    float below = smoothstep(c.y - R*0.1, c.y + R*1.1, uv.y);
+    uv.y -= below * drip * (0.10 + 0.03*sin(t*1.6 + drip*20.0));
+  }
+  else if(uWarp==16) uv = bulge(uv, vec2(0.5), 1.35, 2.4);
+  else if(uWarp==17){
+    float d = length(A(uv-c));
+    float w = 1.0 - smoothstep(R*0.9, R*1.25, d);
+    float px = mix(0.0012, 0.030, w);
+    uv = floor(uv/px)*px + px*0.5;
+  }
+  else if(uWarp==18){
+    vec2 d = A(uv-c);
+    float a = atan(d.y, d.x), l = length(d);
+    float seg = 3.14159/3.0;
+    a = abs(mod(a, seg*2.0) - seg);
+    uv = c + U(vec2(cos(a), sin(a))*l);
+  }
+
+  /* ---------- colour ---------- */
+  vec3 col;
+  if(uTint==6){                                  /* vhs: chroma split + lines */
+    float sh = 0.004 + 0.002*sin(uv.y*90.0 + uTime*6.0);
+    col = vec3(grab(uv+vec2(sh,0.0)).r, grab(uv).g, grab(uv-vec2(sh,0.0)).b);
+    col *= 0.86 + 0.14*sin(vScr.y*900.0);
+    col += (hash(vScr.y*311.0 + floor(uTime*24.0))-0.5)*0.10;
+  } else if(uTint==7){                           /* comic: posterise + outline */
+    vec3 b = grab(uv);
+    float e = 0.0;
+    e += length(b - grab(uv+vec2(0.0028,0.0)));
+    e += length(b - grab(uv+vec2(0.0,0.0028)));
+    col = floor(b*4.0+0.5)/4.0;
+    col *= 1.0 - smoothstep(0.13, 0.34, e);
+  } else {
+    col = grab(uv);
+  }
+
+  float lum = dot(col, vec3(0.2126,0.7152,0.0722));
+  if(uTint==1){                                  /* clarity */
+    col = (col-0.5)*1.18 + 0.5;
+    col = mix(vec3(lum), col, 1.25);
+    col += vec3(0.02,0.01,-0.015);
+  } else if(uTint==2){                           /* mono */
+    col = vec3((lum-0.5)*1.3 + 0.52);
+  } else if(uTint==3){                           /* sepia */
+    col = vec3(lum*1.07+0.06, lum*0.94+0.03, lum*0.72);
+  } else if(uTint==4){                           /* lo-fi */
+    col = mix(vec3(lum), col, 1.6);
+    col = (col-0.5)*1.32 + 0.48;
+    col.b *= 1.06;
+  } else if(uTint==5){                           /* thermal */
+    col = clamp(vec3(smoothstep(0.35,0.95,lum), smoothstep(0.15,0.75,lum)*0.85,
+                     smoothstep(0.0,0.45,1.0-lum)*0.9), 0.0, 1.0);
+    col = pow(col, vec3(0.85));
+  }
+
+  /* vignette on every look — it is a mirror in a dark tent */
+  float vig = 1.0 - 0.42*pow(length((vScr-0.5)*vec2(1.0,1.1))*1.45, 2.0);
+  col *= clamp(vig, 0.0, 1.0);
+
+  gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
+}`;
+
+function sh(type, src){
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+gl.bindAttribLocation(prog, 0, 'aPos');
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+const U = n => gl.getUniformLocation(prog, n);
+const uni = {
+  cover:U('uCover'), asp:U('uAsp'), mirror:U('uMirror'), time:U('uTime'),
+  warp:U('uWarp'), tint:U('uTint'), eyeA:U('uEyeA'), eyeB:U('uEyeB'),
+  mouth:U('uMouth'), face:U('uFace'), has:U('uHas')
+};
+
+/* ---------- camera ---------- */
+let stream = null;
+/* iOS will hand a <video> to the native fullscreen player the moment it decides
+   the element is "real" media. These have to be set before srcObject is assigned. */
+function keepInline(){
+  V.playsInline = true;
+  V.controls = false;
+  V.muted = true;
+  V.volume = 0;
+  V.disablePictureInPicture = true;
+  if('disableRemotePlayback' in V) V.disableRemotePlayback = true;
+  V.removeAttribute('controls');
+}
+/* if it slips through anyway, kick it straight back out */
+V.addEventListener('webkitbeginfullscreen', ()=>{ if(V.webkitExitFullscreen) V.webkitExitFullscreen(); });
+V.addEventListener('webkitpresentationmodechanged', ()=>{
+  if(V.webkitPresentationMode && V.webkitPresentationMode !== 'inline' && V.webkitSetPresentationMode)
+    V.webkitSetPresentationMode('inline');
+});
+V.addEventListener('enterpictureinpicture', ()=>{ if(document.exitPictureInPicture) document.exitPictureInPicture().catch(()=>{}); });
+V.addEventListener('click', e=>e.preventDefault());
+/* and never claim the Now Playing slot / lock-screen transport controls */
+if('mediaSession' in navigator){
+  try{
+    navigator.mediaSession.metadata = null;
+    navigator.mediaSession.playbackState = 'none';
+    for(const a of ['play','pause','seekbackward','seekforward','previoustrack','nexttrack','stop'])
+      try{ navigator.mediaSession.setActionHandler(a, null); }catch(e){}
+  }catch(e){}
+}
+
+async function openCam(){
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio:false,                                   /* no audio track = no media session */
+    video:{ facingMode:state.facing, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} }
+  });
+  keepInline();
+  V.srcObject = stream;
+  keepInline();
+  await V.play();
+  if('mediaSession' in navigator){ try{ navigator.mediaSession.playbackState = 'none'; }catch(e){} }
+  state.mirror = (state.facing === 'user');
+}
+
+document.getElementById('start').onclick = async ()=>{
+  try{
+    await openCam();
+    document.getElementById('veil').classList.add('gone');
+    resize(); requestAnimationFrame(loop);
+    loadLandmarker();
+  }catch(e){
+    fail(e && e.name === 'NotAllowedError'
+      ? 'Camera access was blocked. Allow it in Settings → Safari → Camera, then reload.'
+      : 'Could not open the camera: ' + (e && e.message || e));
+  }
+};
+document.getElementById('flip').onclick = async ()=>{
+  state.facing = state.facing === 'user' ? 'environment' : 'user';
+  try{ await openCam(); }catch(e){ state.facing = 'user'; await openCam(); }
+};
+
+function fail(msg){
+  const v = document.getElementById('veil');
+  v.classList.remove('gone');
+  v.querySelector('p').textContent = msg;
+  document.getElementById('start').textContent = 'Try again';
+  document.getElementById('fine').textContent = location.protocol === 'https:' || location.hostname==='localhost'
+    ? '' : 'Camera needs https — open this page over https or localhost.';
+}
+
+/* ---------- face landmarks (optional) ---------- */
+let landmarker = null, lastSeen = 0;
+async function loadLandmarker(){
+  statusEl.textContent = 'loading tracker';
+  try{
+    const V0 = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, FaceLandmarker } = await import(V0);
+    const files = await FilesetResolver.forVisionTasks(V0 + '/wasm');
+    landmarker = await FaceLandmarker.createFromOptions(files, {
+      baseOptions:{
+        modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+        delegate:'GPU'
+      },
+      runningMode:'VIDEO', numFaces:1,
+      outputFaceBlendshapes:false, outputFacialTransformationMatrixes:false
+    });
+    statusEl.textContent = 'looking';
+  }catch(err){
+    console.warn('landmarker unavailable', err);
+    statusEl.textContent = 'centre lock';
+  }
+}
+
+/* smoothed face geometry, in video-image uv (y down, x from left, un-mirrored) */
+const F = { cx:0.5, cy:0.44, r:0.30, ax:0.44, ay:0.40, ar:0.05, bx:0.56, by:0.40, br:0.05, mx:0.5, my:0.60, mr:0.06, has:0 };
+const avg = (lm, idx) => {
+  let x=0, y=0;
+  for(const i of idx){ x += lm[i].x; y += lm[i].y; }
+  return [x/idx.length, y/idx.length];
+};
+const EYE_A = [33,133,159,145,153,157];    /* image-left eye  */
+const EYE_B = [362,263,386,374,380,385];   /* image-right eye */
+const MOUTH = [13,14,61,291,78,308];
+
+const T = Object.assign({}, F);          /* raw target that the smoother chases */
+let lastDetect = 0, lastTs = -1;
+
+function defaultTarget(aspect){
+  T.cx=0.5; T.cy=0.44; T.r=0.30;
+  T.ax=0.5-0.10/aspect; T.ay=0.38; T.ar=0.055;
+  T.bx=0.5+0.10/aspect; T.by=0.38; T.br=0.055;
+  T.mx=0.5; T.my=0.58; T.mr=0.065; T.has=0;
+}
+
+function trackFace(now, aspect){
+  /* detection is throttled to ~30 Hz, the smoother still runs every frame */
+  if(landmarker && now - lastDetect > 32 && V.readyState >= 2){
+    lastDetect = now;
+    const ts = Math.max(now, lastTs + 1); lastTs = ts;
+    let hit = null;
+    try{
+      const res = landmarker.detectForVideo(V, ts);
+      if(res && res.faceLandmarks && res.faceLandmarks.length) hit = res.faceLandmarks[0];
+    }catch(e){ /* keep the previous target */ }
+
+    if(hit){
+      lastSeen = now;
+      let minX=1, maxX=0, minY=1, maxY=0;
+      for(const p of hit){
+        if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x;
+        if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y;
+      }
+      const [ax,ay] = avg(hit, EYE_A), [bx,by] = avg(hit, EYE_B), [mx,my] = avg(hit, MOUTH);
+      const eyeR = Math.max(0.02, Math.hypot((bx-ax)*aspect, by-ay)*0.30);
+      T.cx=(minX+maxX)/2; T.cy=(minY+maxY)/2;
+      T.r = 0.5*Math.max((maxX-minX)*aspect, (maxY-minY))*1.05;
+      T.ax=ax; T.ay=ay; T.ar=eyeR;
+      T.bx=bx; T.by=by; T.br=eyeR;
+      T.mx=mx; T.my=my; T.mr=eyeR*1.15;
+      T.has=1;
+    } else if(now - lastSeen > 600){
+      defaultTarget(aspect);               /* nobody there, fall back to the middle */
+    }
+  } else if(!landmarker){
+    defaultTarget(aspect);
+  }
+
+  const k = 0.30;
+  for(const key in F) F[key] += (T[key] - F[key]) * k;
+
+  const live = F.has > 0.5;
+  dotEl.classList.toggle('on', live);
+  const label = landmarker ? (live ? 'face locked' : 'looking') : 'centre lock';
+  if(statusEl.textContent !== label) statusEl.textContent = label;
+}
+
+/* ---------- resize ---------- */
+function resize(){
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const w = Math.round(innerWidth*dpr), h = Math.round(innerHeight*dpr);
+  if(C.width !== w || C.height !== h){ C.width = w; C.height = h; gl.viewport(0,0,w,h); }
+}
+addEventListener('resize', resize);
+addEventListener('orientationchange', ()=>setTimeout(resize, 250));
+
+/* ---------- render loop ---------- */
+let t0 = performance.now(), frames = 0, fpsT = t0, pending = null;
+function loop(now){
+  requestAnimationFrame(loop);
+  if(V.readyState < 2 || !V.videoWidth) return;
+  resize();
+
+  const vw = V.videoWidth, vh = V.videoHeight;
+  const aspect = vw/vh, canvasAspect = C.width/C.height;
+  let sx = 1, sy = 1;
+  if(aspect > canvasAspect) sx = canvasAspect/aspect; else sy = aspect/canvasAspect;
+
+  trackFace(now, aspect);
+
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, V);
+
+  gl.uniform2f(uni.cover, sx, sy);
+  gl.uniform1f(uni.asp, aspect);
+  gl.uniform1f(uni.mirror, state.mirror ? 1 : 0);
+  gl.uniform1f(uni.time, (now - t0)/1000);
+  gl.uniform1i(uni.warp, state.warp);
+  gl.uniform1i(uni.tint, state.tint);
+  gl.uniform3f(uni.eyeA, F.ax, F.ay, F.ar);
+  gl.uniform3f(uni.eyeB, F.bx, F.by, F.br);
+  gl.uniform3f(uni.mouth, F.mx, F.my, F.mr);
+  gl.uniform3f(uni.face, F.cx, F.cy, F.r);
+  gl.uniform1f(uni.has, F.has);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  if(pending){ const fn = pending; pending = null; fn(); }
+
+  frames++;
+  if(now - fpsT > 700){ fpsEl.textContent = Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now; }
+}
+
+/* ---------- capture ---------- */
+const sheet = document.getElementById('sheet');
+const shotImg = document.getElementById('shotImg');
+let shotBlob = null;
+
+document.getElementById('shot').onclick = ()=>{
+  document.getElementById('flash').classList.remove('fire');
+  void document.getElementById('flash').offsetWidth;
+  document.getElementById('flash').classList.add('fire');
+  /* read the pixels in the same frame they were drawn */
+  pending = ()=> C.toBlob(b=>{
+    shotBlob = b;
+    shotImg.src = URL.createObjectURL(b);
+    sheet.classList.add('show');
+  }, 'image/jpeg', 0.92);
+};
+document.getElementById('closeSheet').onclick = ()=>{ sheet.classList.remove('show'); };
+document.getElementById('shareBtn').onclick = async ()=>{
+  if(!shotBlob) return;
+  const file = new File([shotBlob], 'funhouse.jpg', {type:'image/jpeg'});
+  if(navigator.canShare && navigator.canShare({files:[file]})){
+    try{ await navigator.share({files:[file]}); }catch(e){}
+  } else if(!/iP(hone|ad|od)/.test(navigator.userAgent)){
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(shotBlob); a.download = 'funhouse.jpg'; a.click();
+  } else {
+    /* a download link here would launch the system file viewer over the app */
+    document.querySelector('.sheet p').textContent = 'Press and hold the picture, then Add to Photos';
+  }
+};
+
+/* keep the stream alive across app switches on iOS */
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden && V.srcObject && V.paused) V.play().catch(()=>{});
+});
+</script>
+</body>
+</html>
