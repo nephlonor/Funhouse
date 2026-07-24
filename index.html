@@ -22,6 +22,7 @@
     font-family:"Avenir Next Condensed","Futura",-apple-system,"Segoe UI",system-ui,sans-serif;
     touch-action:manipulation;-webkit-user-select:none;user-select:none}
   #gl{position:fixed;inset:0;width:100%;height:100%;display:block;background:#000}
+  #fx{position:fixed;inset:0;width:100%;height:100%;display:block;pointer-events:none;z-index:1}
   video{position:fixed;width:2px;height:2px;opacity:.01;pointer-events:none;top:0;left:0}
 
   /* ---- top bar ---- */
@@ -46,6 +47,8 @@
   .rail{display:flex;gap:7px;overflow-x:auto;overflow-y:hidden;padding:0 12px 9px;
     scrollbar-width:none;scroll-snap-type:x proximity}
   .rail::-webkit-scrollbar{display:none}
+  .rlabel{font-size:9px;letter-spacing:.22em;text-transform:uppercase;color:rgba(246,239,230,.3);
+    padding:0 14px 3px;pointer-events:none}
   .chip{flex:0 0 auto;scroll-snap-align:center;border:1px solid rgba(246,239,230,.16);
     background:rgba(246,239,230,.06);color:var(--bone);border-radius:13px;padding:7px 12px 8px;
     font:inherit;font-size:12px;letter-spacing:.09em;text-transform:uppercase;cursor:pointer;
@@ -54,8 +57,7 @@
   .chip .gl{font-size:17px;line-height:1.1;font-family:-apple-system,"Segoe UI Emoji",system-ui}
   .chip:active{transform:scale(.94)}
   .chip[aria-pressed="true"]{background:var(--marigold);border-color:var(--marigold);color:var(--ink);font-weight:600}
-  .rail.tint .chip[aria-pressed="true"]{background:var(--cyan);border-color:var(--cyan)}
-  .rail.tint .chip{padding:7px 13px;min-width:0}
+  #masks .chip[aria-pressed="true"]{background:var(--cyan);border-color:var(--cyan);color:var(--ink)}
 
   .bar{display:flex;align-items:center;justify-content:space-between;padding:6px 24px 2px}
   .shutter{width:74px;height:74px;border-radius:50%;border:4px solid var(--bone);background:transparent;
@@ -98,6 +100,7 @@
 <body>
 
 <canvas id="gl"></canvas>
+<canvas id="fx"></canvas>
 <video id="vid" playsinline webkit-playsinline muted autoplay
        disablepictureinpicture disableremoteplayback x-webkit-airplay="deny"
        preload="none" tabindex="-1" aria-hidden="true"></video>
@@ -110,7 +113,9 @@
 </div>
 
 <div class="deck">
-  <div class="rail tint" id="tints"></div>
+  <div class="rlabel">Characters</div>
+  <div class="rail" id="masks"></div>
+  <div class="rlabel">Warps</div>
   <div class="rail" id="warps"></div>
   <div class="bar">
     <span class="side">fps<b id="fps">–</b></span>
@@ -122,7 +127,7 @@
 <div class="veil" id="veil">
   <div class="card">
     <h1>Fun<br>house</h1>
-    <p>Live camera warps that track your face. Everything runs on-device in one HTML file.</p>
+    <p>Live camera warps &amp; character masks that track your face. Everything runs on-device in one HTML file.</p>
     <button class="go" id="start">Turn on camera</button>
     <div class="fine" id="fine">Needs HTTPS · front camera · sound off</div>
   </div>
@@ -139,7 +144,8 @@
 
 <script type="module">
 /* ============================================================
-   Funhouse — WebGL1 face-tracked camera warps, single file.
+   Funhouse — WebGL1 face-tracked camera warps + AR character
+   masks, single file.
    Face landmarks: MediaPipe Tasks Vision (loaded lazily, optional).
    If the model can't load, everything still works using an
    assumed head position in the centre of the frame.
@@ -147,6 +153,8 @@
 
 const V = document.getElementById('vid');
 const C = document.getElementById('gl');
+const FXC = document.getElementById('fx');
+const fctx = FXC.getContext('2d');
 const statusEl = document.getElementById('status');
 const dotEl = document.getElementById('dot');
 const fpsEl = document.getElementById('fps');
@@ -159,40 +167,62 @@ const WARPS = [
   { id:3,  g:'👀', n:'bug eyes'},
   { id:4,  g:'😮', n:'big mouth'},
   { id:5,  g:'👽', n:'alien'   },
-  { id:6,  g:'🐸', n:'squash'  },
+  { id:6,  g:'🟢', n:'squash'  },
   { id:7,  g:'🥖', n:'stretch' },
   { id:8,  g:'🌀', n:'swirl'   },
   { id:9,  g:'〰️', n:'ripple'  },
   { id:10, g:'🤪', n:'googly'  },
   { id:11, g:'🥔', n:'potato'  },
-  { id:12, g:'🦋', n:'twin'    },
+  { id:12, g:'🪞', n:'twin'    },
   { id:13, g:'🐽', n:'snout'   },
   { id:14, g:'🐹', n:'cheeks'  },
   { id:15, g:'🍦', n:'melt'    },
   { id:16, g:'🔮', n:'fisheye' },
   { id:17, g:'🧊', n:'pixel'   },
   { id:18, g:'❄️', n:'kaleido' },
-];
-const TINTS = [
-  { id:0, n:'raw'      },
-  { id:1, n:'clarity'  },
-  { id:2, n:'mono'     },
-  { id:3, n:'sepia'    },
-  { id:4, n:'lo-fi'    },
-  { id:5, n:'thermal'  },
-  { id:6, n:'vhs'      },
-  { id:7, n:'comic'    },
+  { id:19, g:'🍮', n:'jelly'   },
+  { id:20, g:'🤏', n:'pinch'   },
+  { id:21, g:'🥊', n:'punch'   },
+  { id:22, g:'🌪️', n:'twist'   },
+  { id:23, g:'🔃', n:'flip mir'},
+  { id:24, g:'💥', n:'spikes'  },
+  { id:25, g:'↔️', n:'wide'    },
+  { id:26, g:'↕️', n:'tall'    },
+  { id:27, g:'😵', n:'dizzy'   },
 ];
 
-const state = { warp:1, tint:0, facing:'user', mirror:true, grab:false };
+/* Character masks — drawn as a 2D overlay tracked to the face. id 0 = off. */
+const MASKS = [
+  { id:0,  g:'🚫', n:'none'      },
+  { id:1,  g:'🦄', n:'unicorn'   },
+  { id:2,  g:'🐸', n:'frog'      },
+  { id:3,  g:'🐶', n:'dog'       },
+  { id:4,  g:'🐱', n:'cat'       },
+  { id:5,  g:'🐰', n:'bunny'     },
+  { id:6,  g:'🐷', n:'pig'       },
+  { id:7,  g:'🐻', n:'bear'      },
+  { id:8,  g:'🦌', n:'reindeer'  },
+  { id:9,  g:'😈', n:'devil'     },
+  { id:10, g:'👑', n:'crown'     },
+  { id:11, g:'😎', n:'shades'    },
+  { id:12, g:'🤡', n:'clown'     },
+  { id:13, g:'😇', n:'halo'      },
+  { id:14, g:'🎩', n:'gentleman' },
+  { id:15, g:'🥳', n:'party'     },
+  { id:16, g:'🌸', n:'flowers'   },
+  { id:17, g:'😍', n:'heart eyes'},
+  { id:18, g:'🤩', n:'star eyes' },
+];
+
+const state = { warp:1, mask:0, facing:'user', mirror:true };
 
 /* ---------- chips ---------- */
-function buildRail(el, items, key, withGlyph){
+function buildRail(el, items, key){
   items.forEach(it=>{
     const b = document.createElement('button');
     b.className='chip'; b.type='button';
     b.setAttribute('aria-pressed', String(state[key]===it.id));
-    b.innerHTML = (withGlyph?`<span class="gl">${it.g}</span>`:'') + `<span>${it.n}</span>`;
+    b.innerHTML = `<span class="gl">${it.g}</span><span>${it.n}</span>`;
     b.onclick = ()=>{
       state[key]=it.id;
       [...el.children].forEach((c,i)=>c.setAttribute('aria-pressed', String(items[i].id===it.id)));
@@ -202,8 +232,8 @@ function buildRail(el, items, key, withGlyph){
     el.appendChild(b);
   });
 }
-buildRail(document.getElementById('warps'), WARPS, 'warp', true);
-buildRail(document.getElementById('tints'), TINTS, 'tint', false);
+buildRail(document.getElementById('warps'), WARPS, 'warp');
+buildRail(document.getElementById('masks'), MASKS, 'mask');
 modeNameEl.textContent = WARPS[state.warp].n;
 
 /* ---------- GL ---------- */
@@ -227,7 +257,6 @@ uniform float uAsp;        /* video w/h, for round shapes */
 uniform float uMirror;
 uniform float uTime;
 uniform int   uWarp;
-uniform int   uTint;
 uniform vec3  uEyeA;       /* xy centre, z radius */
 uniform vec3  uEyeB;
 uniform vec3  uMouth;
@@ -335,46 +364,24 @@ void main(){
     a = abs(mod(a, seg*2.0) - seg);
     uv = c + U(vec2(cos(a), sin(a))*l);
   }
-
-  /* ---------- colour ---------- */
-  vec3 col;
-  if(uTint==6){                                  /* vhs: chroma split + lines */
-    float sh = 0.004 + 0.002*sin(uv.y*90.0 + uTime*6.0);
-    col = vec3(grab(uv+vec2(sh,0.0)).r, grab(uv).g, grab(uv-vec2(sh,0.0)).b);
-    col *= 0.86 + 0.14*sin(vScr.y*900.0);
-    col += (hash(vScr.y*311.0 + floor(uTime*24.0))-0.5)*0.10;
-  } else if(uTint==7){                           /* comic: posterise + outline */
-    vec3 b = grab(uv);
-    float e = 0.0;
-    e += length(b - grab(uv+vec2(0.0028,0.0)));
-    e += length(b - grab(uv+vec2(0.0,0.0028)));
-    col = floor(b*4.0+0.5)/4.0;
-    col *= 1.0 - smoothstep(0.13, 0.34, e);
-  } else {
-    col = grab(uv);
+  else if(uWarp==19) uv += vec2(0.010*sin(uv.y*7.0 + t*2.2), 0.010*sin(uv.x*7.0 + t*1.9));
+  else if(uWarp==20) uv = bulge(uv, vec2(0.5), 1.7, 0.65);
+  else if(uWarp==21){ float z = 1.0 + 0.14*sin(t*3.2); uv = (uv-0.5)/z + 0.5; }
+  else if(uWarp==22) uv = swirl(uv, vec2(0.5), 1.7, 1.4*sin(t*0.6));
+  else if(uWarp==23) uv.y = c.y - abs(uv.y - c.y);
+  else if(uWarp==24){
+    vec2 d = A(uv-c); float a = atan(d.y, d.x), l = length(d);
+    if(l < R*1.7){ l *= 1.0 + 0.10*sin(a*12.0 + t*2.0); uv = c + U(vec2(cos(a), sin(a))*l); }
   }
+  else if(uWarp==25) uv = scaleAt(uv, c, vec2(1.7,1.0), R*1.9);
+  else if(uWarp==26) uv = scaleAt(uv, c, vec2(1.0,1.7), R*1.9);
+  else if(uWarp==27) uv = swirl(uv, c, R*1.6, 2.0*sin(t*1.2));
 
-  float lum = dot(col, vec3(0.2126,0.7152,0.0722));
-  if(uTint==1){                                  /* clarity */
-    col = (col-0.5)*1.18 + 0.5;
-    col = mix(vec3(lum), col, 1.25);
-    col += vec3(0.02,0.01,-0.015);
-  } else if(uTint==2){                           /* mono */
-    col = vec3((lum-0.5)*1.3 + 0.52);
-  } else if(uTint==3){                           /* sepia */
-    col = vec3(lum*1.07+0.06, lum*0.94+0.03, lum*0.72);
-  } else if(uTint==4){                           /* lo-fi */
-    col = mix(vec3(lum), col, 1.6);
-    col = (col-0.5)*1.32 + 0.48;
-    col.b *= 1.06;
-  } else if(uTint==5){                           /* thermal */
-    col = clamp(vec3(smoothstep(0.35,0.95,lum), smoothstep(0.15,0.75,lum)*0.85,
-                     smoothstep(0.0,0.45,1.0-lum)*0.9), 0.0, 1.0);
-    col = pow(col, vec3(0.85));
-  }
+  /* ---------- output (raw) ---------- */
+  vec3 col = grab(uv);
 
-  /* vignette on every look — it is a mirror in a dark tent */
-  float vig = 1.0 - 0.42*pow(length((vScr-0.5)*vec2(1.0,1.1))*1.45, 2.0);
+  /* gentle vignette — it is a mirror in a dark tent */
+  float vig = 1.0 - 0.22*pow(length((vScr-0.5)*vec2(1.0,1.1))*1.45, 2.0);
   col *= clamp(vig, 0.0, 1.0);
 
   gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
@@ -409,7 +416,7 @@ gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 const U = n => gl.getUniformLocation(prog, n);
 const uni = {
   cover:U('uCover'), asp:U('uAsp'), mirror:U('uMirror'), time:U('uTime'),
-  warp:U('uWarp'), tint:U('uTint'), eyeA:U('uEyeA'), eyeB:U('uEyeB'),
+  warp:U('uWarp'), eyeA:U('uEyeA'), eyeB:U('uEyeB'),
   mouth:U('uMouth'), face:U('uFace'), has:U('uHas')
 };
 
@@ -570,11 +577,198 @@ function trackFace(now, aspect){
   if(statusEl.textContent !== label) statusEl.textContent = label;
 }
 
+/* ============================================================
+   Character masks — 2D overlay tracked to the face.
+   We build a face frame from the smoothed eye/mouth points and
+   place each accessory in "eye-distance" units so it scales and
+   rotates with the head. Everything is drawn with the canvas 2D
+   API (no external art), so it works fully offline.
+   ============================================================ */
+
+function rrect(ctx,x,y,w,h,r){
+  if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(x,y,w,h,r); return; }
+  r=Math.min(r,w/2,h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function emoji(ctx,p,g,size,rot){
+  ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(rot||0);
+  ctx.font = `${Math.max(6,size)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(g,0,0); ctx.restore();
+}
+/* translate to face point (u right, v up in eye-distance units) then rotate with head */
+function at(ctx,f,u,v,extra,cb){
+  const p=f.P(u,v); ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(f.ang+(extra||0));
+  cb(ctx,f.S); ctx.restore();
+}
+
+const MASK_DRAW = {
+  1(ctx,f){ /* unicorn */
+    at(ctx,f,0,1.15,0,(x,S)=>{
+      const cols=['#ff5d8f','#ff9f45','#ffd23f','#5ec26a','#4d96ff','#9b5de5'];
+      x.lineCap='round';
+      for(let i=0;i<cols.length;i++){ x.beginPath(); x.strokeStyle=cols[i]; x.lineWidth=S*0.14;
+        x.arc(0,0,S*(1.55-i*0.17),Math.PI*1.08,Math.PI*1.92); x.stroke(); }
+    });
+    for(const s of [-1,1]) at(ctx,f,s*0.8,1.35,s*0.18,(x,S)=>{
+      x.fillStyle='#fbeff7'; x.beginPath(); x.moveTo(-S*0.28,0); x.lineTo(S*0.28,0); x.lineTo(0,-S*0.85); x.closePath(); x.fill();
+      x.fillStyle='#ff9ec4'; x.beginPath(); x.moveTo(-S*0.14,-S*0.08); x.lineTo(S*0.14,-S*0.08); x.lineTo(0,-S*0.58); x.closePath(); x.fill();
+    });
+    at(ctx,f,0,1.5,0,(x,S)=>{
+      const h=S*1.5,w=S*0.3, g=x.createLinearGradient(0,0,0,-h);
+      g.addColorStop(0,'#ffd23f'); g.addColorStop(1,'#ffb627');
+      x.fillStyle=g; x.beginPath(); x.moveTo(-w,0); x.lineTo(w,0); x.lineTo(0,-h); x.closePath(); x.fill();
+      x.strokeStyle='rgba(170,110,0,.5)'; x.lineWidth=S*0.05;
+      for(let i=1;i<=5;i++){ const yy=-h*(i/6), ww=w*(1-i/6); x.beginPath(); x.moveTo(-ww,yy+S*0.06); x.lineTo(ww,yy-S*0.06); x.stroke(); }
+    });
+  },
+  2(ctx,f){ /* frog */
+    for(const s of [-1,1]) at(ctx,f,s*0.62,1.3,0,(x,S)=>{
+      x.fillStyle='#5ec26a'; x.beginPath(); x.arc(0,0,S*0.5,0,7); x.fill();
+      x.fillStyle='#fff'; x.beginPath(); x.arc(0,-S*0.05,S*0.32,0,7); x.fill();
+      x.fillStyle='#13251c'; x.beginPath(); x.arc(0,0,S*0.15,0,7); x.fill();
+    });
+    for(const s of [-1,1]) at(ctx,f,s*0.14,0.35,0,(x,S)=>{ x.fillStyle='rgba(20,60,30,.5)'; x.beginPath(); x.arc(0,0,S*0.05,0,7); x.fill(); });
+  },
+  3(ctx,f){ /* dog */
+    for(const s of [-1,1]) at(ctx,f,s*1.05,0.55,s*0.25,(x,S)=>{
+      x.fillStyle='#8a5a2b'; x.beginPath(); x.ellipse(0,S*0.55,S*0.42,S*0.95,0,0,7); x.fill();
+      x.fillStyle='#6b3f19'; x.beginPath(); x.ellipse(0,S*0.75,S*0.24,S*0.6,0,0,7); x.fill();
+    });
+    at(ctx,f,0,0.15,0,(x,S)=>{ x.fillStyle='#1b1b1b'; x.beginPath(); x.ellipse(0,0,S*0.22,S*0.16,0,0,7); x.fill();
+      x.fillStyle='rgba(255,255,255,.35)'; x.beginPath(); x.ellipse(-S*0.06,-S*0.05,S*0.06,S*0.04,0,0,7); x.fill(); });
+    at(ctx,f,0,-1.35,0,(x,S)=>{ x.fillStyle='#ff6b8b'; rrect(x,-S*0.22,0,S*0.44,S*0.7,S*0.2); x.fill();
+      x.strokeStyle='#e04f70'; x.lineWidth=S*0.05; x.beginPath(); x.moveTo(0,S*0.1); x.lineTo(0,S*0.6); x.stroke(); });
+  },
+  4(ctx,f){ /* cat */
+    for(const s of [-1,1]) at(ctx,f,s*0.75,1.35,s*0.12,(x,S)=>{
+      x.fillStyle='#7a7f87'; x.beginPath(); x.moveTo(-S*0.32,0); x.lineTo(S*0.32,0); x.lineTo(0,-S*0.8); x.closePath(); x.fill();
+      x.fillStyle='#ffb3c6'; x.beginPath(); x.moveTo(-S*0.15,-S*0.05); x.lineTo(S*0.15,-S*0.05); x.lineTo(0,-S*0.5); x.closePath(); x.fill();
+    });
+    at(ctx,f,0,0.12,0,(x,S)=>{ x.fillStyle='#ff7a9c'; x.beginPath(); x.moveTo(-S*0.12,0); x.lineTo(S*0.12,0); x.lineTo(0,S*0.12); x.closePath(); x.fill(); });
+    at(ctx,f,0,0.05,0,(x,S)=>{ x.strokeStyle='rgba(255,255,255,.85)'; x.lineWidth=S*0.03;
+      for(const s of [-1,1]) for(let i=-1;i<=1;i++){ x.beginPath(); x.moveTo(s*S*0.2,0); x.lineTo(s*S*1.1,i*S*0.28); x.stroke(); } });
+  },
+  5(ctx,f){ /* bunny */
+    for(const s of [-1,1]) at(ctx,f,s*0.42,1.95,s*0.06,(x,S)=>{
+      x.fillStyle='#f7f2f5'; x.beginPath(); x.ellipse(0,0,S*0.26,S*1.0,0,0,7); x.fill();
+      x.fillStyle='#ff9ec4'; x.beginPath(); x.ellipse(0,S*0.05,S*0.13,S*0.75,0,0,7); x.fill();
+    });
+    at(ctx,f,0,0.15,0,(x,S)=>{ x.fillStyle='#ff7a9c'; x.beginPath(); x.moveTo(-S*0.1,0); x.lineTo(S*0.1,0); x.lineTo(0,S*0.12); x.closePath(); x.fill(); });
+    at(ctx,f,0,-1.15,0,(x,S)=>{ x.fillStyle='#fff'; rrect(x,-S*0.2,0,S*0.18,S*0.32,S*0.05); x.fill(); rrect(x,S*0.02,0,S*0.18,S*0.32,S*0.05); x.fill(); });
+    at(ctx,f,0,0.08,0,(x,S)=>{ x.strokeStyle='rgba(255,255,255,.8)'; x.lineWidth=S*0.03;
+      for(const s of [-1,1]) for(let i=-1;i<=1;i++){ x.beginPath(); x.moveTo(s*S*0.16,0); x.lineTo(s*S*1.0,i*S*0.24); x.stroke(); } });
+  },
+  6(ctx,f){ /* pig */
+    for(const s of [-1,1]) at(ctx,f,s*0.75,1.25,s*0.2,(x,S)=>{
+      x.fillStyle='#ff9bb3'; x.beginPath(); x.moveTo(-S*0.3,-S*0.1); x.lineTo(S*0.3,-S*0.1); x.lineTo(0,S*0.5); x.closePath(); x.fill();
+    });
+    at(ctx,f,0,0.1,0,(x,S)=>{ x.fillStyle='#ff9bb3'; x.beginPath(); x.ellipse(0,0,S*0.5,S*0.38,0,0,7); x.fill();
+      x.fillStyle='#e56f90'; for(const s of [-1,1]){ x.beginPath(); x.ellipse(s*S*0.18,0,S*0.08,S*0.14,0,0,7); x.fill(); } });
+  },
+  7(ctx,f){ /* bear */
+    for(const s of [-1,1]) at(ctx,f,s*0.82,1.4,0,(x,S)=>{
+      x.fillStyle='#7a5230'; x.beginPath(); x.arc(0,0,S*0.42,0,7); x.fill();
+      x.fillStyle='#a9784e'; x.beginPath(); x.arc(0,0,S*0.22,0,7); x.fill();
+    });
+    at(ctx,f,0,0.1,0,(x,S)=>{ x.fillStyle='#c69a6b'; x.beginPath(); x.ellipse(0,S*0.15,S*0.45,S*0.35,0,0,7); x.fill();
+      x.fillStyle='#3b2a1a'; x.beginPath(); x.ellipse(0,-S*0.02,S*0.2,S*0.15,0,0,7); x.fill(); });
+  },
+  8(ctx,f){ /* reindeer */
+    for(const s of [-1,1]) at(ctx,f,s*0.5,1.25,0,(x,S)=>{
+      x.strokeStyle='#7a4a1e'; x.lineWidth=S*0.12; x.lineCap='round';
+      x.beginPath(); x.moveTo(0,0); x.lineTo(s*S*0.4,-S*1.15); x.stroke();
+      x.beginPath(); x.moveTo(s*S*0.2,-S*0.5); x.lineTo(s*S*0.75,-S*0.7); x.stroke();
+      x.beginPath(); x.moveTo(s*S*0.3,-S*0.85); x.lineTo(s*S*0.8,-S*1.05); x.stroke();
+    });
+    at(ctx,f,0,0.12,0,(x,S)=>{ x.fillStyle='#ff3b3b'; x.beginPath(); x.arc(0,0,S*0.22,0,7); x.fill();
+      x.fillStyle='rgba(255,255,255,.4)'; x.beginPath(); x.arc(-S*0.07,-S*0.07,S*0.07,0,7); x.fill(); });
+  },
+  9(ctx,f){ /* devil */
+    for(const s of [-1,1]) at(ctx,f,s*0.55,1.3,0,(x,S)=>{
+      x.fillStyle='#d63636'; x.beginPath(); x.moveTo(-S*0.12,0);
+      x.quadraticCurveTo(s*S*0.1,-S*0.9,s*S*0.5,-S*1.0);
+      x.quadraticCurveTo(s*S*0.15,-S*0.7,S*0.12,0); x.closePath(); x.fill();
+    });
+  },
+  10(ctx,f){ /* crown */
+    at(ctx,f,0,1.05,0,(x,S)=>{
+      const w=S*1.5,h=S*0.7; x.fillStyle='#ffcf33'; x.beginPath();
+      x.moveTo(-w/2,h*0.4); x.lineTo(-w/2,-h*0.2); x.lineTo(-w*0.25,h*0.15);
+      x.lineTo(0,-h*0.45); x.lineTo(w*0.25,h*0.15); x.lineTo(w/2,-h*0.2); x.lineTo(w/2,h*0.4); x.closePath(); x.fill();
+      x.fillStyle='#ff5d8f'; x.beginPath(); x.arc(0,h*0.12,S*0.1,0,7); x.fill();
+      x.fillStyle='#4d96ff'; for(const s of [-1,1]){ x.beginPath(); x.arc(s*w*0.3,h*0.16,S*0.07,0,7); x.fill(); }
+    });
+  },
+  11(ctx,f){ /* shades */
+    for(const s of [-1,1]) at(ctx,f,s*0.5,0.0,0,(x,S)=>{
+      x.fillStyle='#111'; rrect(x,-S*0.42,-S*0.3,S*0.84,S*0.52,S*0.14); x.fill();
+      x.fillStyle='rgba(255,255,255,.18)'; rrect(x,-S*0.3,-S*0.2,S*0.26,S*0.12,S*0.05); x.fill();
+    });
+    at(ctx,f,0,-0.02,0,(x,S)=>{ x.fillStyle='#111'; x.fillRect(-S*0.22,-S*0.06,S*0.44,S*0.12); });
+  },
+  12(ctx,f){ /* clown */
+    for(const s of [-1,1]) at(ctx,f,s*1.15,0.8,0,(x,S)=>{
+      x.fillStyle='#ff4d4d'; for(const o of [[-0.3,0],[0.3,0],[0,-0.3],[0,0.3],[0,0]]){ x.beginPath(); x.arc(o[0]*S*1.2,o[1]*S*1.2,S*0.4,0,7); x.fill(); }
+    });
+    for(const s of [-1,1]) at(ctx,f,s*0.55,-0.35,0,(x,S)=>{ x.fillStyle='rgba(255,90,120,.6)'; x.beginPath(); x.arc(0,0,S*0.25,0,7); x.fill(); });
+    at(ctx,f,0,0.15,0,(x,S)=>{ x.fillStyle='#ff3b3b'; x.beginPath(); x.arc(0,0,S*0.28,0,7); x.fill();
+      x.fillStyle='rgba(255,255,255,.4)'; x.beginPath(); x.arc(-S*0.09,-S*0.09,S*0.08,0,7); x.fill(); });
+  },
+  13(ctx,f){ /* halo */
+    at(ctx,f,0,1.7,0,(x,S)=>{ x.shadowColor='#ffe89a'; x.shadowBlur=S*0.6; x.strokeStyle='#ffe27a'; x.lineWidth=S*0.14;
+      x.beginPath(); x.ellipse(0,0,S*0.8,S*0.28,0,0,7); x.stroke(); x.shadowBlur=0; });
+  },
+  14(ctx,f){ /* gentleman */
+    at(ctx,f,0,1.35,0,(x,S)=>{ x.fillStyle='#161616'; x.fillRect(-S,0,S*2,S*0.16);
+      rrect(x,-S*0.6,-S*1.1,S*1.2,S*1.15,S*0.06); x.fill(); x.fillStyle='#7a1f2b'; x.fillRect(-S*0.6,-S*0.2,S*1.2,S*0.16); });
+    at(ctx,f,0,-0.55,0,(x,S)=>{ x.fillStyle='#241a12'; x.beginPath(); x.moveTo(0,0);
+      x.quadraticCurveTo(-S*0.5,-S*0.2,-S*0.9,S*0.15); x.quadraticCurveTo(-S*0.5,S*0.05,0,S*0.18);
+      x.quadraticCurveTo(S*0.5,S*0.05,S*0.9,S*0.15); x.quadraticCurveTo(S*0.5,-S*0.2,0,0); x.closePath(); x.fill(); });
+    at(ctx,f,0.5,0.0,0,(x,S)=>{ x.strokeStyle='#e7c14b'; x.lineWidth=S*0.08; x.beginPath(); x.arc(0,0,S*0.4,0,7); x.stroke();
+      x.beginPath(); x.moveTo(0,S*0.4); x.lineTo(S*0.1,S*1.2); x.stroke(); });
+  },
+  15(ctx,f){ /* party */
+    at(ctx,f,0.15,1.4,0.25,(x,S)=>{ const g=x.createLinearGradient(-S*0.5,0,S*0.5,0);
+      g.addColorStop(0,'#ff5d8f'); g.addColorStop(.5,'#ffd23f'); g.addColorStop(1,'#4d96ff');
+      x.fillStyle=g; x.beginPath(); x.moveTo(-S*0.5,0); x.lineTo(S*0.5,0); x.lineTo(0,-S*1.4); x.closePath(); x.fill();
+      x.fillStyle='#fff'; x.beginPath(); x.arc(0,-S*1.4,S*0.14,0,7); x.fill(); });
+    emoji(ctx,f.P(-1.4,1.0),'🎉',f.S*0.9,0); emoji(ctx,f.P(1.5,0.5),'🎊',f.S*0.8,0);
+  },
+  16(ctx,f){ /* flower crown */
+    for(let i=-2;i<=2;i++) emoji(ctx,f.P(i*0.45, 1.25 - Math.abs(i)*0.06), (i%2?'🌷':'🌸'), f.S*0.7, f.ang);
+  },
+  17(ctx,f){ for(const s of [-1,1]) emoji(ctx,f.P(s*0.5,0.0),'❤️',f.S*0.85,f.ang); },
+  18(ctx,f){ for(const s of [-1,1]) emoji(ctx,f.P(s*0.5,0.0),'⭐',f.S*0.95,f.ang); },
+};
+
+function drawMasks(sx, sy){
+  const W = C.width, H = C.height;
+  fctx.clearRect(0,0,W,H);
+  if(!state.mask) return;
+  const map=(tx,ty)=>{
+    const ux = state.mirror ? 1-tx : tx;
+    return { x:((ux-0.5)/sx + 0.5)*W, y:((ty-0.5)/sy + 0.5)*H };
+  };
+  const eA=map(F.ax,F.ay), eB=map(F.bx,F.by), mo=map(F.mx,F.my);
+  const L = eA.x<=eB.x ? eA : eB, R = eA.x<=eB.x ? eB : eA;
+  const mid = { x:(L.x+R.x)/2, y:(L.y+R.y)/2 };
+  const S = Math.hypot(R.x-L.x, R.y-L.y) || (0.12*H);
+  const ang = Math.atan2(R.y-L.y, R.x-L.x);
+  const axx=Math.cos(ang), axy=Math.sin(ang), upx=axy, upy=-axx;
+  const P=(u,v)=>({ x: mid.x+axx*(u*S)+upx*(v*S), y: mid.y+axy*(u*S)+upy*(v*S) });
+  const f = { P, mid, L, R, mo, S, ang };
+  const fn = MASK_DRAW[state.mask];
+  if(fn) fn(fctx, f);
+}
+
 /* ---------- resize ---------- */
 function resize(){
   const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
   const w = Math.round(innerWidth*dpr), h = Math.round(innerHeight*dpr);
   if(C.width !== w || C.height !== h){ C.width = w; C.height = h; gl.viewport(0,0,w,h); }
+  if(FXC.width !== w || FXC.height !== h){ FXC.width = w; FXC.height = h; }
 }
 addEventListener('resize', resize);
 addEventListener('orientationchange', ()=>setTimeout(resize, 250));
@@ -601,13 +795,14 @@ function loop(now){
   gl.uniform1f(uni.mirror, state.mirror ? 1 : 0);
   gl.uniform1f(uni.time, (now - t0)/1000);
   gl.uniform1i(uni.warp, state.warp);
-  gl.uniform1i(uni.tint, state.tint);
   gl.uniform3f(uni.eyeA, F.ax, F.ay, F.ar);
   gl.uniform3f(uni.eyeB, F.bx, F.by, F.br);
   gl.uniform3f(uni.mouth, F.mx, F.my, F.mr);
   gl.uniform3f(uni.face, F.cx, F.cy, F.r);
   gl.uniform1f(uni.has, F.has);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  drawMasks(sx, sy);
 
   if(pending){ const fn = pending; pending = null; fn(); }
 
@@ -624,12 +819,18 @@ document.getElementById('shot').onclick = ()=>{
   document.getElementById('flash').classList.remove('fire');
   void document.getElementById('flash').offsetWidth;
   document.getElementById('flash').classList.add('fire');
-  /* read the pixels in the same frame they were drawn */
-  pending = ()=> C.toBlob(b=>{
-    shotBlob = b;
-    shotImg.src = URL.createObjectURL(b);
-    sheet.classList.add('show');
-  }, 'image/jpeg', 0.92);
+  /* composite the warp + the mask overlay in the same frame they were drawn */
+  pending = ()=>{
+    const tmp = document.createElement('canvas'); tmp.width = C.width; tmp.height = C.height;
+    const tc = tmp.getContext('2d');
+    tc.drawImage(C, 0, 0);
+    tc.drawImage(FXC, 0, 0);
+    tmp.toBlob(b=>{
+      shotBlob = b;
+      shotImg.src = URL.createObjectURL(b);
+      sheet.classList.add('show');
+    }, 'image/jpeg', 0.92);
+  };
 };
 document.getElementById('closeSheet').onclick = ()=>{ sheet.classList.remove('show'); };
 document.getElementById('shareBtn').onclick = async ()=>{
