@@ -22,7 +22,7 @@
     font-family:"Avenir Next Condensed","Futura",-apple-system,"Segoe UI",system-ui,sans-serif;
     touch-action:manipulation;-webkit-user-select:none;user-select:none}
   #gl{position:fixed;inset:0;width:100%;height:100%;display:block;background:#000}
-  #fx{position:fixed;inset:0;width:100%;height:100%;display:block;pointer-events:none;z-index:1}
+  #three{position:fixed;inset:0;width:100%;height:100%;display:block;pointer-events:none;z-index:2}
   video{position:fixed;width:2px;height:2px;opacity:.01;pointer-events:none;top:0;left:0}
 
   /* ---- top bar ---- */
@@ -100,7 +100,7 @@
 <body>
 
 <canvas id="gl"></canvas>
-<canvas id="fx"></canvas>
+<canvas id="three"></canvas>
 <video id="vid" playsinline webkit-playsinline muted autoplay
        disablepictureinpicture disableremoteplayback x-webkit-airplay="deny"
        preload="none" tabindex="-1" aria-hidden="true"></video>
@@ -113,7 +113,7 @@
 </div>
 
 <div class="deck">
-  <div class="rlabel">Characters</div>
+  <div class="rlabel">3D Characters</div>
   <div class="rail" id="masks"></div>
   <div class="rlabel">Warps</div>
   <div class="rail" id="warps"></div>
@@ -127,7 +127,7 @@
 <div class="veil" id="veil">
   <div class="card">
     <h1>Fun<br>house</h1>
-    <p>Live camera warps &amp; character masks that track your face. Everything runs on-device in one HTML file.</p>
+    <p>Live camera warps &amp; real-3D character masks that track your face in 3D. Everything runs on-device.</p>
     <button class="go" id="start">Turn on camera</button>
     <div class="fine" id="fine">Needs HTTPS · front camera · sound off</div>
   </div>
@@ -144,21 +144,25 @@
 
 <script type="module">
 /* ============================================================
-   Funhouse — WebGL1 face-tracked camera warps + AR character
-   masks, single file.
-   Face landmarks: MediaPipe Tasks Vision (loaded lazily, optional).
-   If the model can't load, everything still works using an
-   assumed head position in the centre of the frame.
+   Funhouse — WebGL1 face-tracked camera warps + real 3D
+   character masks, single file.
+
+   Face landmarks: MediaPipe Tasks Vision (lazy, optional).
+   3D layer: three.js. The 468 landmarks (incl. their z depth)
+   are turned into a full head pose — position, orientation
+   (pitch / yaw / roll) and scale — and procedurally-built
+   character rigs are rendered on top with PBR materials,
+   lighting and a real depth buffer. A hidden head occluder
+   makes accessories wrap around the head.
    ============================================================ */
 
-const V = document.getElementById('vid');
-const C = document.getElementById('gl');
-const FXC = document.getElementById('fx');
-const fctx = FXC.getContext('2d');
-const statusEl = document.getElementById('status');
-const dotEl = document.getElementById('dot');
-const fpsEl = document.getElementById('fps');
-const modeNameEl = document.getElementById('modeName');
+const V  = document.getElementById('vid');
+const C  = document.getElementById('gl');
+const TC = document.getElementById('three');
+const statusEl  = document.getElementById('status');
+const dotEl     = document.getElementById('dot');
+const fpsEl     = document.getElementById('fps');
+const modeNameEl= document.getElementById('modeName');
 
 const WARPS = [
   { id:0,  g:'🙂', n:'none'    },
@@ -191,7 +195,7 @@ const WARPS = [
   { id:27, g:'😵', n:'dizzy'   },
 ];
 
-/* Character masks — drawn as a 2D overlay tracked to the face. id 0 = off. */
+/* 3D character rigs — id 0 = off */
 const MASKS = [
   { id:0,  g:'🚫', n:'none'      },
   { id:1,  g:'🦄', n:'unicorn'   },
@@ -227,6 +231,7 @@ function buildRail(el, items, key){
       state[key]=it.id;
       [...el.children].forEach((c,i)=>c.setAttribute('aria-pressed', String(items[i].id===it.id)));
       if(key==='warp') modeNameEl.textContent = it.n;
+      if(key==='mask' && it.id) loadThree();
       b.scrollIntoView({behavior:'smooth', inline:'center', block:'nearest'});
     };
     el.appendChild(b);
@@ -236,7 +241,7 @@ buildRail(document.getElementById('warps'), WARPS, 'warp');
 buildRail(document.getElementById('masks'), MASKS, 'mask');
 modeNameEl.textContent = WARPS[state.warp].n;
 
-/* ---------- GL ---------- */
+/* ---------- GL (warps) ---------- */
 const gl = C.getContext('webgl', {alpha:false, antialias:false, preserveDrawingBuffer:false, powerPreference:'high-performance'});
 if(!gl){ fail('This browser has no WebGL. Try Safari or Chrome.'); }
 
@@ -252,12 +257,12 @@ const FS = `
 precision highp float;
 varying vec2 vScr;
 uniform sampler2D uTex;
-uniform vec2  uCover;      /* cover-fit scale */
-uniform float uAsp;        /* video w/h, for round shapes */
+uniform vec2  uCover;
+uniform float uAsp;
 uniform float uMirror;
 uniform float uTime;
 uniform int   uWarp;
-uniform vec3  uEyeA;       /* xy centre, z radius */
+uniform vec3  uEyeA;
 uniform vec3  uEyeB;
 uniform vec3  uMouth;
 uniform vec3  uFace;
@@ -266,7 +271,6 @@ uniform float uHas;
 vec2 A(vec2 d){ return d*vec2(uAsp,1.0); }
 vec2 U(vec2 d){ return d/vec2(uAsp,1.0); }
 
-/* radial magnify (p>1) or pinch (p<1) inside radius r */
 vec2 bulge(vec2 uv, vec2 c, float r, float p){
   vec2 d = A(uv-c); float l = length(d);
   if(l >= r || l < 1e-6) return uv;
@@ -285,7 +289,6 @@ vec2 swirl(vec2 uv, vec2 c, float r, float amt){
   return c + U(vec2(d.x*co - d.y*s, d.x*s + d.y*co));
 }
 float hash(float x){ return fract(sin(x*127.1)*43758.5453); }
-
 vec3 grab(vec2 uv){ return texture2D(uTex, clamp(uv,0.001,0.999)).rgb; }
 
 void main(){
@@ -377,13 +380,9 @@ void main(){
   else if(uWarp==26) uv = scaleAt(uv, c, vec2(1.0,1.7), R*1.9);
   else if(uWarp==27) uv = swirl(uv, c, R*1.6, 2.0*sin(t*1.2));
 
-  /* ---------- output (raw) ---------- */
   vec3 col = grab(uv);
-
-  /* gentle vignette — it is a mirror in a dark tent */
   float vig = 1.0 - 0.22*pow(length((vScr-0.5)*vec2(1.0,1.1))*1.45, 2.0);
   col *= clamp(vig, 0.0, 1.0);
-
   gl_FragColor = vec4(clamp(col,0.0,1.0), 1.0);
 }`;
 
@@ -422,18 +421,12 @@ const uni = {
 
 /* ---------- camera ---------- */
 let stream = null;
-/* iOS will hand a <video> to the native fullscreen player the moment it decides
-   the element is "real" media. These have to be set before srcObject is assigned. */
 function keepInline(){
-  V.playsInline = true;
-  V.controls = false;
-  V.muted = true;
-  V.volume = 0;
+  V.playsInline = true; V.controls = false; V.muted = true; V.volume = 0;
   V.disablePictureInPicture = true;
   if('disableRemotePlayback' in V) V.disableRemotePlayback = true;
   V.removeAttribute('controls');
 }
-/* if it slips through anyway, kick it straight back out */
 V.addEventListener('webkitbeginfullscreen', ()=>{ if(V.webkitExitFullscreen) V.webkitExitFullscreen(); });
 V.addEventListener('webkitpresentationmodechanged', ()=>{
   if(V.webkitPresentationMode && V.webkitPresentationMode !== 'inline' && V.webkitSetPresentationMode)
@@ -441,7 +434,6 @@ V.addEventListener('webkitpresentationmodechanged', ()=>{
 });
 V.addEventListener('enterpictureinpicture', ()=>{ if(document.exitPictureInPicture) document.exitPictureInPicture().catch(()=>{}); });
 V.addEventListener('click', e=>e.preventDefault());
-/* and never claim the Now Playing slot / lock-screen transport controls */
 if('mediaSession' in navigator){
   try{
     navigator.mediaSession.metadata = null;
@@ -454,7 +446,7 @@ if('mediaSession' in navigator){
 async function openCam(){
   if(stream) stream.getTracks().forEach(t=>t.stop());
   stream = await navigator.mediaDevices.getUserMedia({
-    audio:false,                                   /* no audio track = no media session */
+    audio:false,
     video:{ facingMode:state.facing, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} }
   });
   keepInline();
@@ -471,6 +463,7 @@ document.getElementById('start').onclick = async ()=>{
     document.getElementById('veil').classList.add('gone');
     resize(); requestAnimationFrame(loop);
     loadLandmarker();
+    loadThree();
   }catch(e){
     fail(e && e.name === 'NotAllowedError'
       ? 'Camera access was blocked. Allow it in Settings → Safari → Camera, then reload.'
@@ -514,18 +507,21 @@ async function loadLandmarker(){
   }
 }
 
-/* smoothed face geometry, in video-image uv (y down, x from left, un-mirrored) */
+/* smoothed face geometry (for the 2D warp shader), video-image uv */
 const F = { cx:0.5, cy:0.44, r:0.30, ax:0.44, ay:0.40, ar:0.05, bx:0.56, by:0.40, br:0.05, mx:0.5, my:0.60, mr:0.06, has:0 };
 const avg = (lm, idx) => {
   let x=0, y=0;
   for(const i of idx){ x += lm[i].x; y += lm[i].y; }
   return [x/idx.length, y/idx.length];
 };
-const EYE_A = [33,133,159,145,153,157];    /* image-left eye  */
-const EYE_B = [362,263,386,374,380,385];   /* image-right eye */
+const EYE_A = [33,133,159,145,153,157];
+const EYE_B = [362,263,386,374,380,385];
 const MOUTH = [13,14,61,291,78,308];
 
-const T = Object.assign({}, F);          /* raw target that the smoother chases */
+/* raw landmark subset used to build the 3D head pose */
+const rawPose = { has:0, n:null, chin:null, top:null, lc:null, rc:null };
+
+const T = Object.assign({}, F);
 let lastDetect = 0, lastTs = -1;
 
 function defaultTarget(aspect){
@@ -536,7 +532,6 @@ function defaultTarget(aspect){
 }
 
 function trackFace(now, aspect){
-  /* detection is throttled to ~30 Hz, the smoother still runs every frame */
   if(landmarker && now - lastDetect > 32 && V.readyState >= 2){
     lastDetect = now;
     const ts = Math.max(now, lastTs + 1); lastTs = ts;
@@ -561,11 +556,16 @@ function trackFace(now, aspect){
       T.bx=bx; T.by=by; T.br=eyeR;
       T.mx=mx; T.my=my; T.mr=eyeR*1.15;
       T.has=1;
+      const gp = i => [hit[i].x, hit[i].y, hit[i].z];
+      rawPose.n=gp(1); rawPose.chin=gp(152); rawPose.top=gp(10); rawPose.lc=gp(234); rawPose.rc=gp(454);
+      rawPose.has = 1;
     } else if(now - lastSeen > 600){
-      defaultTarget(aspect);               /* nobody there, fall back to the middle */
+      defaultTarget(aspect);
+      rawPose.has = 0;
     }
   } else if(!landmarker){
     defaultTarget(aspect);
+    rawPose.has = 0;
   }
 
   const k = 0.30;
@@ -578,197 +578,283 @@ function trackFace(now, aspect){
 }
 
 /* ============================================================
-   Character masks — 2D overlay tracked to the face.
-   We build a face frame from the smoothed eye/mouth points and
-   place each accessory in "eye-distance" units so it scales and
-   rotates with the head. Everything is drawn with the canvas 2D
-   API (no external art), so it works fully offline.
+   three.js — real 3D character layer
    ============================================================ */
+let THREE=null, renderer=null, scene=null, camera=null, threeLoading=false, threeReady=false;
+const models = {};                 /* id -> THREE.Group (built lazily) */
+let smPos, smQuat, smScale=0, poseInit=false;
 
-function rrect(ctx,x,y,w,h,r){
-  if(ctx.roundRect){ ctx.beginPath(); ctx.roundRect(x,y,w,h,r); return; }
-  r=Math.min(r,w/2,h/2);
-  ctx.beginPath();
-  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
-  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
-}
-function emoji(ctx,p,g,size,rot){
-  ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(rot||0);
-  ctx.font = `${Math.max(6,size)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
-  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(g,0,0); ctx.restore();
-}
-/* translate to face point (u right, v up in eye-distance units) then rotate with head */
-function at(ctx,f,u,v,extra,cb){
-  const p=f.P(u,v); ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(f.ang+(extra||0));
-  cb(ctx,f.S); ctx.restore();
+async function loadThree(){
+  if(threeReady || threeLoading) return;
+  threeLoading = true;
+  try{
+    THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js');
+    renderer = new THREE.WebGLRenderer({ canvas:TC, alpha:true, antialias:true, preserveDrawingBuffer:true });
+    renderer.setPixelRatio(1);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+
+    scene = new THREE.Scene();
+    camera = new THREE.OrthographicCamera(0, C.width, 0, C.height, -4000, 4000);
+    camera.position.z = 1000;
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x2a2340, 1.15); scene.add(hemi);
+    const key = new THREE.DirectionalLight(0xffffff, 1.5); key.position.set(-0.5,-1.0,1.2).multiplyScalar(1000); scene.add(key);
+    const rim = new THREE.DirectionalLight(0x9fc6ff, 0.55); rim.position.set(0.7,-0.1,0.6).multiplyScalar(1000); scene.add(rim);
+
+    smPos = new THREE.Vector3(); smQuat = new THREE.Quaternion();
+    resizeThree();
+    threeReady = true;
+  }catch(e){
+    console.warn('three.js unavailable', e);
+    statusEl.textContent = '3d unavailable';
+  }finally{
+    threeLoading = false;
+  }
 }
 
-const MASK_DRAW = {
-  1(ctx,f){ /* unicorn */
-    at(ctx,f,0,1.15,0,(x,S)=>{
-      const cols=['#ff5d8f','#ff9f45','#ffd23f','#5ec26a','#4d96ff','#9b5de5'];
-      x.lineCap='round';
-      for(let i=0;i<cols.length;i++){ x.beginPath(); x.strokeStyle=cols[i]; x.lineWidth=S*0.14;
-        x.arc(0,0,S*(1.55-i*0.17),Math.PI*1.08,Math.PI*1.92); x.stroke(); }
-    });
-    for(const s of [-1,1]) at(ctx,f,s*0.8,1.35,s*0.18,(x,S)=>{
-      x.fillStyle='#fbeff7'; x.beginPath(); x.moveTo(-S*0.28,0); x.lineTo(S*0.28,0); x.lineTo(0,-S*0.85); x.closePath(); x.fill();
-      x.fillStyle='#ff9ec4'; x.beginPath(); x.moveTo(-S*0.14,-S*0.08); x.lineTo(S*0.14,-S*0.08); x.lineTo(0,-S*0.58); x.closePath(); x.fill();
-    });
-    at(ctx,f,0,1.5,0,(x,S)=>{
-      const h=S*1.5,w=S*0.3, g=x.createLinearGradient(0,0,0,-h);
-      g.addColorStop(0,'#ffd23f'); g.addColorStop(1,'#ffb627');
-      x.fillStyle=g; x.beginPath(); x.moveTo(-w,0); x.lineTo(w,0); x.lineTo(0,-h); x.closePath(); x.fill();
-      x.strokeStyle='rgba(170,110,0,.5)'; x.lineWidth=S*0.05;
-      for(let i=1;i<=5;i++){ const yy=-h*(i/6), ww=w*(1-i/6); x.beginPath(); x.moveTo(-ww,yy+S*0.06); x.lineTo(ww,yy-S*0.06); x.stroke(); }
-    });
-  },
-  2(ctx,f){ /* frog */
-    for(const s of [-1,1]) at(ctx,f,s*0.62,1.3,0,(x,S)=>{
-      x.fillStyle='#5ec26a'; x.beginPath(); x.arc(0,0,S*0.5,0,7); x.fill();
-      x.fillStyle='#fff'; x.beginPath(); x.arc(0,-S*0.05,S*0.32,0,7); x.fill();
-      x.fillStyle='#13251c'; x.beginPath(); x.arc(0,0,S*0.15,0,7); x.fill();
-    });
-    for(const s of [-1,1]) at(ctx,f,s*0.14,0.35,0,(x,S)=>{ x.fillStyle='rgba(20,60,30,.5)'; x.beginPath(); x.arc(0,0,S*0.05,0,7); x.fill(); });
-  },
-  3(ctx,f){ /* dog */
-    for(const s of [-1,1]) at(ctx,f,s*1.05,0.55,s*0.25,(x,S)=>{
-      x.fillStyle='#8a5a2b'; x.beginPath(); x.ellipse(0,S*0.55,S*0.42,S*0.95,0,0,7); x.fill();
-      x.fillStyle='#6b3f19'; x.beginPath(); x.ellipse(0,S*0.75,S*0.24,S*0.6,0,0,7); x.fill();
-    });
-    at(ctx,f,0,0.15,0,(x,S)=>{ x.fillStyle='#1b1b1b'; x.beginPath(); x.ellipse(0,0,S*0.22,S*0.16,0,0,7); x.fill();
-      x.fillStyle='rgba(255,255,255,.35)'; x.beginPath(); x.ellipse(-S*0.06,-S*0.05,S*0.06,S*0.04,0,0,7); x.fill(); });
-    at(ctx,f,0,-1.35,0,(x,S)=>{ x.fillStyle='#ff6b8b'; rrect(x,-S*0.22,0,S*0.44,S*0.7,S*0.2); x.fill();
-      x.strokeStyle='#e04f70'; x.lineWidth=S*0.05; x.beginPath(); x.moveTo(0,S*0.1); x.lineTo(0,S*0.6); x.stroke(); });
-  },
-  4(ctx,f){ /* cat */
-    for(const s of [-1,1]) at(ctx,f,s*0.75,1.35,s*0.12,(x,S)=>{
-      x.fillStyle='#7a7f87'; x.beginPath(); x.moveTo(-S*0.32,0); x.lineTo(S*0.32,0); x.lineTo(0,-S*0.8); x.closePath(); x.fill();
-      x.fillStyle='#ffb3c6'; x.beginPath(); x.moveTo(-S*0.15,-S*0.05); x.lineTo(S*0.15,-S*0.05); x.lineTo(0,-S*0.5); x.closePath(); x.fill();
-    });
-    at(ctx,f,0,0.12,0,(x,S)=>{ x.fillStyle='#ff7a9c'; x.beginPath(); x.moveTo(-S*0.12,0); x.lineTo(S*0.12,0); x.lineTo(0,S*0.12); x.closePath(); x.fill(); });
-    at(ctx,f,0,0.05,0,(x,S)=>{ x.strokeStyle='rgba(255,255,255,.85)'; x.lineWidth=S*0.03;
-      for(const s of [-1,1]) for(let i=-1;i<=1;i++){ x.beginPath(); x.moveTo(s*S*0.2,0); x.lineTo(s*S*1.1,i*S*0.28); x.stroke(); } });
-  },
-  5(ctx,f){ /* bunny */
-    for(const s of [-1,1]) at(ctx,f,s*0.42,1.95,s*0.06,(x,S)=>{
-      x.fillStyle='#f7f2f5'; x.beginPath(); x.ellipse(0,0,S*0.26,S*1.0,0,0,7); x.fill();
-      x.fillStyle='#ff9ec4'; x.beginPath(); x.ellipse(0,S*0.05,S*0.13,S*0.75,0,0,7); x.fill();
-    });
-    at(ctx,f,0,0.15,0,(x,S)=>{ x.fillStyle='#ff7a9c'; x.beginPath(); x.moveTo(-S*0.1,0); x.lineTo(S*0.1,0); x.lineTo(0,S*0.12); x.closePath(); x.fill(); });
-    at(ctx,f,0,-1.15,0,(x,S)=>{ x.fillStyle='#fff'; rrect(x,-S*0.2,0,S*0.18,S*0.32,S*0.05); x.fill(); rrect(x,S*0.02,0,S*0.18,S*0.32,S*0.05); x.fill(); });
-    at(ctx,f,0,0.08,0,(x,S)=>{ x.strokeStyle='rgba(255,255,255,.8)'; x.lineWidth=S*0.03;
-      for(const s of [-1,1]) for(let i=-1;i<=1;i++){ x.beginPath(); x.moveTo(s*S*0.16,0); x.lineTo(s*S*1.0,i*S*0.24); x.stroke(); } });
-  },
-  6(ctx,f){ /* pig */
-    for(const s of [-1,1]) at(ctx,f,s*0.75,1.25,s*0.2,(x,S)=>{
-      x.fillStyle='#ff9bb3'; x.beginPath(); x.moveTo(-S*0.3,-S*0.1); x.lineTo(S*0.3,-S*0.1); x.lineTo(0,S*0.5); x.closePath(); x.fill();
-    });
-    at(ctx,f,0,0.1,0,(x,S)=>{ x.fillStyle='#ff9bb3'; x.beginPath(); x.ellipse(0,0,S*0.5,S*0.38,0,0,7); x.fill();
-      x.fillStyle='#e56f90'; for(const s of [-1,1]){ x.beginPath(); x.ellipse(s*S*0.18,0,S*0.08,S*0.14,0,0,7); x.fill(); } });
-  },
-  7(ctx,f){ /* bear */
-    for(const s of [-1,1]) at(ctx,f,s*0.82,1.4,0,(x,S)=>{
-      x.fillStyle='#7a5230'; x.beginPath(); x.arc(0,0,S*0.42,0,7); x.fill();
-      x.fillStyle='#a9784e'; x.beginPath(); x.arc(0,0,S*0.22,0,7); x.fill();
-    });
-    at(ctx,f,0,0.1,0,(x,S)=>{ x.fillStyle='#c69a6b'; x.beginPath(); x.ellipse(0,S*0.15,S*0.45,S*0.35,0,0,7); x.fill();
-      x.fillStyle='#3b2a1a'; x.beginPath(); x.ellipse(0,-S*0.02,S*0.2,S*0.15,0,0,7); x.fill(); });
-  },
-  8(ctx,f){ /* reindeer */
-    for(const s of [-1,1]) at(ctx,f,s*0.5,1.25,0,(x,S)=>{
-      x.strokeStyle='#7a4a1e'; x.lineWidth=S*0.12; x.lineCap='round';
-      x.beginPath(); x.moveTo(0,0); x.lineTo(s*S*0.4,-S*1.15); x.stroke();
-      x.beginPath(); x.moveTo(s*S*0.2,-S*0.5); x.lineTo(s*S*0.75,-S*0.7); x.stroke();
-      x.beginPath(); x.moveTo(s*S*0.3,-S*0.85); x.lineTo(s*S*0.8,-S*1.05); x.stroke();
-    });
-    at(ctx,f,0,0.12,0,(x,S)=>{ x.fillStyle='#ff3b3b'; x.beginPath(); x.arc(0,0,S*0.22,0,7); x.fill();
-      x.fillStyle='rgba(255,255,255,.4)'; x.beginPath(); x.arc(-S*0.07,-S*0.07,S*0.07,0,7); x.fill(); });
-  },
-  9(ctx,f){ /* devil */
-    for(const s of [-1,1]) at(ctx,f,s*0.55,1.3,0,(x,S)=>{
-      x.fillStyle='#d63636'; x.beginPath(); x.moveTo(-S*0.12,0);
-      x.quadraticCurveTo(s*S*0.1,-S*0.9,s*S*0.5,-S*1.0);
-      x.quadraticCurveTo(s*S*0.15,-S*0.7,S*0.12,0); x.closePath(); x.fill();
-    });
-  },
-  10(ctx,f){ /* crown */
-    at(ctx,f,0,1.05,0,(x,S)=>{
-      const w=S*1.5,h=S*0.7; x.fillStyle='#ffcf33'; x.beginPath();
-      x.moveTo(-w/2,h*0.4); x.lineTo(-w/2,-h*0.2); x.lineTo(-w*0.25,h*0.15);
-      x.lineTo(0,-h*0.45); x.lineTo(w*0.25,h*0.15); x.lineTo(w/2,-h*0.2); x.lineTo(w/2,h*0.4); x.closePath(); x.fill();
-      x.fillStyle='#ff5d8f'; x.beginPath(); x.arc(0,h*0.12,S*0.1,0,7); x.fill();
-      x.fillStyle='#4d96ff'; for(const s of [-1,1]){ x.beginPath(); x.arc(s*w*0.3,h*0.16,S*0.07,0,7); x.fill(); }
-    });
-  },
-  11(ctx,f){ /* shades */
-    for(const s of [-1,1]) at(ctx,f,s*0.5,0.0,0,(x,S)=>{
-      x.fillStyle='#111'; rrect(x,-S*0.42,-S*0.3,S*0.84,S*0.52,S*0.14); x.fill();
-      x.fillStyle='rgba(255,255,255,.18)'; rrect(x,-S*0.3,-S*0.2,S*0.26,S*0.12,S*0.05); x.fill();
-    });
-    at(ctx,f,0,-0.02,0,(x,S)=>{ x.fillStyle='#111'; x.fillRect(-S*0.22,-S*0.06,S*0.44,S*0.12); });
-  },
-  12(ctx,f){ /* clown */
-    for(const s of [-1,1]) at(ctx,f,s*1.15,0.8,0,(x,S)=>{
-      x.fillStyle='#ff4d4d'; for(const o of [[-0.3,0],[0.3,0],[0,-0.3],[0,0.3],[0,0]]){ x.beginPath(); x.arc(o[0]*S*1.2,o[1]*S*1.2,S*0.4,0,7); x.fill(); }
-    });
-    for(const s of [-1,1]) at(ctx,f,s*0.55,-0.35,0,(x,S)=>{ x.fillStyle='rgba(255,90,120,.6)'; x.beginPath(); x.arc(0,0,S*0.25,0,7); x.fill(); });
-    at(ctx,f,0,0.15,0,(x,S)=>{ x.fillStyle='#ff3b3b'; x.beginPath(); x.arc(0,0,S*0.28,0,7); x.fill();
-      x.fillStyle='rgba(255,255,255,.4)'; x.beginPath(); x.arc(-S*0.09,-S*0.09,S*0.08,0,7); x.fill(); });
-  },
-  13(ctx,f){ /* halo */
-    at(ctx,f,0,1.7,0,(x,S)=>{ x.shadowColor='#ffe89a'; x.shadowBlur=S*0.6; x.strokeStyle='#ffe27a'; x.lineWidth=S*0.14;
-      x.beginPath(); x.ellipse(0,0,S*0.8,S*0.28,0,0,7); x.stroke(); x.shadowBlur=0; });
-  },
-  14(ctx,f){ /* gentleman */
-    at(ctx,f,0,1.35,0,(x,S)=>{ x.fillStyle='#161616'; x.fillRect(-S,0,S*2,S*0.16);
-      rrect(x,-S*0.6,-S*1.1,S*1.2,S*1.15,S*0.06); x.fill(); x.fillStyle='#7a1f2b'; x.fillRect(-S*0.6,-S*0.2,S*1.2,S*0.16); });
-    at(ctx,f,0,-0.55,0,(x,S)=>{ x.fillStyle='#241a12'; x.beginPath(); x.moveTo(0,0);
-      x.quadraticCurveTo(-S*0.5,-S*0.2,-S*0.9,S*0.15); x.quadraticCurveTo(-S*0.5,S*0.05,0,S*0.18);
-      x.quadraticCurveTo(S*0.5,S*0.05,S*0.9,S*0.15); x.quadraticCurveTo(S*0.5,-S*0.2,0,0); x.closePath(); x.fill(); });
-    at(ctx,f,0.5,0.0,0,(x,S)=>{ x.strokeStyle='#e7c14b'; x.lineWidth=S*0.08; x.beginPath(); x.arc(0,0,S*0.4,0,7); x.stroke();
-      x.beginPath(); x.moveTo(0,S*0.4); x.lineTo(S*0.1,S*1.2); x.stroke(); });
-  },
-  15(ctx,f){ /* party */
-    at(ctx,f,0.15,1.4,0.25,(x,S)=>{ const g=x.createLinearGradient(-S*0.5,0,S*0.5,0);
-      g.addColorStop(0,'#ff5d8f'); g.addColorStop(.5,'#ffd23f'); g.addColorStop(1,'#4d96ff');
-      x.fillStyle=g; x.beginPath(); x.moveTo(-S*0.5,0); x.lineTo(S*0.5,0); x.lineTo(0,-S*1.4); x.closePath(); x.fill();
-      x.fillStyle='#fff'; x.beginPath(); x.arc(0,-S*1.4,S*0.14,0,7); x.fill(); });
-    emoji(ctx,f.P(-1.4,1.0),'🎉',f.S*0.9,0); emoji(ctx,f.P(1.5,0.5),'🎊',f.S*0.8,0);
-  },
-  16(ctx,f){ /* flower crown */
-    for(let i=-2;i<=2;i++) emoji(ctx,f.P(i*0.45, 1.25 - Math.abs(i)*0.06), (i%2?'🌷':'🌸'), f.S*0.7, f.ang);
-  },
-  17(ctx,f){ for(const s of [-1,1]) emoji(ctx,f.P(s*0.5,0.0),'❤️',f.S*0.85,f.ang); },
-  18(ctx,f){ for(const s of [-1,1]) emoji(ctx,f.P(s*0.5,0.0),'⭐',f.S*0.95,f.ang); },
-};
+function resizeThree(){
+  if(!renderer) return;
+  renderer.setSize(C.width, C.height, false);
+  camera.right = C.width; camera.bottom = C.height;
+  camera.updateProjectionMatrix();
+}
 
-function drawMasks(sx, sy){
-  const W = C.width, H = C.height;
-  fctx.clearRect(0,0,W,H);
-  if(!state.mask) return;
-  const map=(tx,ty)=>{
-    const ux = state.mirror ? 1-tx : tx;
-    return { x:((ux-0.5)/sx + 0.5)*W, y:((ty-0.5)/sy + 0.5)*H };
+/* ---- procedural character rigs (units of face-width, origin at nose tip;
+        +x = subject right, +y = up, +z = out of face toward camera) ---- */
+function buildModel(id){
+  const T = THREE, g = new T.Group();
+  const SPH=new T.SphereGeometry(1,28,20), CON=new T.ConeGeometry(1,1,26),
+        CYL=new T.CylinderGeometry(1,1,1,26), TOR=new T.TorusGeometry(1,0.28,16,44),
+        BOX=new T.BoxGeometry(1,1,1);
+  const CAP = T.CapsuleGeometry ? new T.CapsuleGeometry(0.5,1,8,16) : CYL;
+  const mat=(c,o)=>new T.MeshStandardMaterial(Object.assign({color:c,roughness:0.55,metalness:0.0},o||{}));
+  const gold=mat(0xffcf33,{metalness:0.95,roughness:0.22}),
+        white=mat(0xf6eff5), pink=mat(0xff9ec4), black=mat(0x161616,{roughness:0.3}),
+        red=mat(0xd83a3a,{roughness:0.4});
+  const add=(geo,m,p,r,s)=>{ const me=new T.Mesh(geo,m);
+    if(p)me.position.set(p[0],p[1],p[2]); if(r)me.rotation.set(r[0],r[1],r[2]);
+    if(s!=null){ Array.isArray(s)?me.scale.set(s[0],s[1],s[2]):me.scale.setScalar(s);} g.add(me); return me; };
+
+  /* hidden head occluder so accessories wrap around the head (depth-only) */
+  const occ = mat(0x000000); occ.colorWrite = false;
+  add(SPH, occ, [0,0.35,-0.35], null, [0.95,1.15,0.95]);
+
+  const ears = (m, x, y, z, rot, s) => add(CON, m, [x,y,z], rot, s);
+
+  switch(id){
+    case 1: { /* unicorn */
+      add(CON, gold, [0,1.25,0.35], [0.28,0,0], [0.14,0.85,0.14]);
+      const cols=[0xff5d8f,0xff9f45,0xffd23f,0x5ec26a,0x4d96ff,0x9b5de5];
+      for(let i=0;i<cols.length;i++) add(SPH, mat(cols[i]), [(-0.5+i*0.2),1.02+0.12*Math.sin(i),0.28], null, 0.11);
+      for(const s of [-1,1]){
+        ears(white, s*0.52,1.02,0.12,[0.2,0,-s*0.15],[0.17,0.4,0.11]);
+        ears(pink,  s*0.52,1.05,0.2,[0.2,0,-s*0.15],[0.09,0.24,0.06]);
+      }
+      break;
+    }
+    case 2: { /* frog */
+      const green=mat(0x5ec26a,{roughness:0.5});
+      for(const s of [-1,1]){
+        add(SPH, green, [s*0.55,1.12,0.15], null, 0.44);
+        add(SPH, white, [s*0.55,1.24,0.44], null, 0.24);
+        add(SPH, black, [s*0.55,1.27,0.62], null, 0.12);
+      }
+      break;
+    }
+    case 3: { /* dog */
+      const brown=mat(0x8a5a2b), tan=mat(0xb9895a);
+      for(const s of [-1,1]) add(CAP, brown, [s*0.92,0.35,-0.05], [0,0,s*0.18], [0.26,0.62,0.34]);
+      add(SPH, black, [0,0.05,0.5], null, [0.22,0.17,0.16]);
+      add(SPH, tan, [0,-0.15,0.42], null, [0.34,0.3,0.3]);
+      break;
+    }
+    case 4: { /* cat */
+      const gray=mat(0x8a8f97);
+      for(const s of [-1,1]){
+        ears(gray, s*0.5,1.02,0.02,null,[0.28,0.5,0.14]);
+        ears(pink, s*0.5,1.0,0.09,null,[0.15,0.28,0.08]);
+      }
+      add(SPH, pink, [0,0.16,0.42], null, [0.1,0.08,0.08]);
+      const wm = mat(0xffffff);
+      for(const s of [-1,1]) for(let i=-1;i<=1;i++)
+        add(CYL, wm, [s*0.62,0.06+i*0.09,0.34], [0,0,Math.PI/2 + i*0.12*s], [0.008,0.6,0.008]);
+      break;
+    }
+    case 5: { /* bunny */
+      for(const s of [-1,1]){
+        add(CAP, white, [s*0.34,1.55,0.0], [0,0,s*0.05], [0.24,0.62,0.24]);
+        add(CAP, pink,  [s*0.34,1.6,0.12], [0,0,s*0.05], [0.12,0.5,0.12]);
+      }
+      add(SPH, pink, [0,0.16,0.42], null, [0.1,0.08,0.08]);
+      break;
+    }
+    case 6: { /* pig */
+      const pk=mat(0xff9bb3);
+      add(CYL, pk, [0,0.05,0.5], [Math.PI/2,0,0], [0.4,0.24,0.4]);
+      for(const s of [-1,1]) add(SPH, mat(0xe56f90), [s*0.16,0.05,0.66], null, [0.08,0.11,0.06]);
+      for(const s of [-1,1]) ears(pk, s*0.5,0.98,0.05,[0.4,0,s*0.2],[0.24,0.32,0.14]);
+      break;
+    }
+    case 7: { /* bear */
+      const br=mat(0x6f4a2b), lt=mat(0xcaa06f);
+      for(const s of [-1,1]) add(SPH, br, [s*0.62,0.98,0.0], null, 0.32);
+      add(SPH, lt, [0,-0.02,0.42], null, [0.4,0.32,0.3]);
+      add(SPH, black, [0,0.12,0.6], null, [0.16,0.12,0.12]);
+      break;
+    }
+    case 8: { /* reindeer */
+      const br=mat(0x7a4a1e);
+      for(const s of [-1,1]){
+        add(CYL, br, [s*0.42,1.15,0], [0,0,-s*0.5], [0.06,0.95,0.06]);
+        add(CYL, br, [s*0.62,1.4,0], [0,0,-s*0.9], [0.045,0.5,0.045]);
+        add(CYL, br, [s*0.72,1.75,0], [0,0,-s*0.6], [0.04,0.45,0.04]);
+      }
+      add(SPH, red, [0,0.05,0.55], null, 0.2);
+      break;
+    }
+    case 9: { /* devil */
+      for(const s of [-1,1]) add(CON, red, [s*0.4,1.02,0.12], [0.25,0,-s*0.35], [0.15,0.55,0.15]);
+      break;
+    }
+    case 10: { /* crown */
+      add(TOR, gold, [0,1.12,-0.1], [Math.PI/2,0,0], [0.72,0.72,0.5]);
+      const gems=[0xff5d8f,0x4d96ff,0x5ec26a,0xff9f45,0x9b5de5];
+      for(let i=0;i<5;i++){ const a=(i-2)*0.5;
+        add(CON, gold, [Math.sin(a)*0.72,1.32,Math.cos(a)*0.5], [0.1,-a,0], [0.12,0.4,0.12]);
+        add(SPH, mat(gems[i],{metalness:0.3,roughness:0.2}), [Math.sin(a)*0.72,1.12,Math.cos(a)*0.55], null, 0.09);
+      }
+      break;
+    }
+    case 11: { /* shades */
+      const glass=mat(0x0a0a0a,{metalness:0.6,roughness:0.15}), frame=mat(0x111);
+      for(const s of [-1,1]) add(BOX, glass, [s*0.4,0.34,0.45], [0,0,0], [0.34,0.22,0.06]);
+      add(BOX, frame, [0,0.34,0.47], null, [0.22,0.05,0.05]);
+      for(const s of [-1,1]) add(BOX, frame, [s*0.62,0.36,0.2], [0,0.5*s,0], [0.4,0.05,0.05]);
+      break;
+    }
+    case 12: { /* clown */
+      add(SPH, mat(0xff3b3b), [0,0.1,0.55], null, 0.24);
+      for(const s of [-1,1]){ add(SPH, red, [s*0.95,0.85,-0.1], null, 0.42);
+        add(SPH, mat(0x4d96ff), [s*1.1,1.05,-0.1], null, 0.3); }
+      break;
+    }
+    case 13: { /* halo */
+      const h=mat(0xffe27a,{emissive:0xffcf33,emissiveIntensity:0.9,metalness:0.7,roughness:0.3});
+      add(TOR, h, [0,1.85,-0.25], [Math.PI/2*0.82,0,0], [0.62,0.62,0.62]);
+      break;
+    }
+    case 14: { /* gentleman */
+      const blk=mat(0x141414,{roughness:0.4});
+      add(CYL, blk, [0,1.2,0], null, [0.98,0.06,0.98]);
+      add(CYL, blk, [0,1.62,0], null, [0.6,0.82,0.6]);
+      add(CYL, mat(0x7a1f2b), [0,1.28,0], null, [0.63,0.12,0.63]);
+      add(TOR, mat(0x241a12), [0,-0.42,0.44], [Math.PI/2,0,0], [0.3,0.16,0.14]);
+      break;
+    }
+    case 15: { /* party */
+      const cone=mat(0xff5d8f);
+      add(CON, cone, [0.12,1.5,0], [0,0,-0.16], [0.5,1.1,0.5]);
+      for(let i=0;i<5;i++) add(TOR, mat([0xffd23f,0x4d96ff,0x5ec26a,0xff9f45,0x9b5de5][i]),
+        [0.12+Math.sin(i)*0.05,1.05+i*0.2,0], [Math.PI/2,0,0], [0.5-i*0.08,0.5-i*0.08,0.4]);
+      add(SPH, white, [0.12,2.06,0], null, 0.16);
+      break;
+    }
+    case 16: { /* flower crown */
+      const petal=mat(0xff7ab0), petal2=mat(0xffd23f), ctr=mat(0xffe27a);
+      for(let i=-2;i<=2;i++){ const fg=new T.Group();
+        const pm = (i%2)?petal2:petal;
+        for(let k=0;k<5;k++){ const a=k/5*Math.PI*2;
+          const m=new T.Mesh(SPH,pm); m.position.set(Math.cos(a)*0.13,Math.sin(a)*0.13,0); m.scale.set(0.1,0.1,0.05); fg.add(m); }
+        const cm=new T.Mesh(SPH,ctr); cm.scale.setScalar(0.08); fg.add(cm);
+        fg.position.set(i*0.4,1.12-Math.abs(i)*0.05,0.32*Math.cos(i*0.5)+0.12);
+        g.add(fg);
+      }
+      break;
+    }
+    case 17: { /* heart eyes */
+      const geo=heartGeo(T), hm=mat(0xff3b6b,{emissive:0x661022,emissiveIntensity:0.5,roughness:0.35});
+      for(const s of [-1,1]) add(geo, hm, [s*0.42,0.4,0.5], [0,0,0], 0.5);
+      break;
+    }
+    case 18: { /* star eyes */
+      const geo=starGeo(T), sm=mat(0xffd23f,{emissive:0x6b5200,emissiveIntensity:0.6,roughness:0.3,metalness:0.2});
+      for(const s of [-1,1]) add(geo, sm, [s*0.42,0.4,0.5], [0,0,0], 0.5);
+      break;
+    }
+  }
+  return g;
+}
+
+function heartGeo(T){
+  const s=new T.Shape();
+  s.moveTo(0,0.25);
+  s.bezierCurveTo(0,0.35,-0.12,0.5,-0.28,0.5);
+  s.bezierCurveTo(-0.6,0.5,-0.6,0.08,-0.28,-0.15);
+  s.lineTo(0,-0.45);
+  s.lineTo(0.28,-0.15);
+  s.bezierCurveTo(0.6,0.08,0.6,0.5,0.28,0.5);
+  s.bezierCurveTo(0.12,0.5,0,0.35,0,0.25);
+  return new T.ExtrudeGeometry(s,{depth:0.22,bevelEnabled:true,bevelThickness:0.05,bevelSize:0.05,bevelSegments:2});
+}
+function starGeo(T){
+  const s=new T.Shape();
+  for(let i=0;i<10;i++){ const r=i%2?0.24:0.55, a=Math.PI/2 + i*Math.PI/5;
+    const x=Math.cos(a)*r, y=Math.sin(a)*r; i?s.lineTo(x,y):s.moveTo(x,y); }
+  s.closePath();
+  return new T.ExtrudeGeometry(s,{depth:0.2,bevelEnabled:true,bevelThickness:0.05,bevelSize:0.05,bevelSegments:2});
+}
+
+/* build a smoothed 3D head pose target from the raw landmarks */
+function computeTarget(sx, sy){
+  const W=C.width, H=C.height, mir=state.mirror;
+  const mp = p => {
+    const ux = mir ? 1-p[0] : p[0];
+    return new THREE.Vector3(((ux-0.5)/sx + 0.5)*W, ((p[1]-0.5)/sy + 0.5)*H, (-p[2])*W);
   };
-  const eA=map(F.ax,F.ay), eB=map(F.bx,F.by), mo=map(F.mx,F.my);
-  const L = eA.x<=eB.x ? eA : eB, R = eA.x<=eB.x ? eB : eA;
-  const mid = { x:(L.x+R.x)/2, y:(L.y+R.y)/2 };
-  const S = Math.hypot(R.x-L.x, R.y-L.y) || (0.12*H);
-  const ang = Math.atan2(R.y-L.y, R.x-L.x);
-  const axx=Math.cos(ang), axy=Math.sin(ang), upx=axy, upy=-axx;
-  const P=(u,v)=>({ x: mid.x+axx*(u*S)+upx*(v*S), y: mid.y+axy*(u*S)+upy*(v*S) });
-  const f = { P, mid, L, R, mo, S, ang };
-  const fn = MASK_DRAW[state.mask];
-  if(fn) fn(fctx, f);
+  const n=mp(rawPose.n), chin=mp(rawPose.chin), top=mp(rawPose.top), lc=mp(rawPose.lc), rc=mp(rawPose.rc);
+  const right=new THREE.Vector3().subVectors(rc,lc);
+  const scale=right.length() || (0.2*H);
+  right.normalize();
+  const up=new THREE.Vector3().subVectors(top,chin).normalize();
+  const fwd=new THREE.Vector3().crossVectors(right,up).normalize();
+  if(fwd.z<0) fwd.negate();
+  right.crossVectors(up,fwd).normalize();
+  up.crossVectors(fwd,right).normalize();
+  const m=new THREE.Matrix4().makeBasis(right,up,fwd);
+  const quat=new THREE.Quaternion().setFromRotationMatrix(m);
+  return { pos:n, quat, scale };
+}
+
+function updateChar(sx, sy){
+  if(!renderer) return;
+  if(state.mask && threeReady){
+    if(!models[state.mask]){ models[state.mask]=buildModel(state.mask); scene.add(models[state.mask]); }
+    for(const k in models) models[k].visible = (+k === state.mask);
+    const g = models[state.mask];
+    if(rawPose.has){
+      const tgt = computeTarget(sx, sy);
+      if(!poseInit){ smPos.copy(tgt.pos); smQuat.copy(tgt.quat); smScale=tgt.scale; poseInit=true; }
+      else{ smPos.lerp(tgt.pos,0.4); smQuat.slerp(tgt.quat,0.4); smScale += (tgt.scale-smScale)*0.4; }
+      g.visible = true;
+      g.position.copy(smPos);
+      g.quaternion.copy(smQuat);
+      g.scale.setScalar(smScale);
+    } else {
+      g.visible = false;
+    }
+  } else {
+    for(const k in models) models[k].visible = false;
+  }
+  renderer.render(scene, camera);
 }
 
 /* ---------- resize ---------- */
 function resize(){
   const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
   const w = Math.round(innerWidth*dpr), h = Math.round(innerHeight*dpr);
-  if(C.width !== w || C.height !== h){ C.width = w; C.height = h; gl.viewport(0,0,w,h); }
-  if(FXC.width !== w || FXC.height !== h){ FXC.width = w; FXC.height = h; }
+  if(C.width !== w || C.height !== h){ C.width = w; C.height = h; gl.viewport(0,0,w,h); resizeThree(); }
 }
 addEventListener('resize', resize);
 addEventListener('orientationchange', ()=>setTimeout(resize, 250));
@@ -802,7 +888,7 @@ function loop(now){
   gl.uniform1f(uni.has, F.has);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  drawMasks(sx, sy);
+  updateChar(sx, sy);
 
   if(pending){ const fn = pending; pending = null; fn(); }
 
@@ -819,12 +905,12 @@ document.getElementById('shot').onclick = ()=>{
   document.getElementById('flash').classList.remove('fire');
   void document.getElementById('flash').offsetWidth;
   document.getElementById('flash').classList.add('fire');
-  /* composite the warp + the mask overlay in the same frame they were drawn */
+  /* composite warp + 3D layer in the same frame they were drawn */
   pending = ()=>{
     const tmp = document.createElement('canvas'); tmp.width = C.width; tmp.height = C.height;
     const tc = tmp.getContext('2d');
     tc.drawImage(C, 0, 0);
-    tc.drawImage(FXC, 0, 0);
+    if(renderer && state.mask) tc.drawImage(TC, 0, 0);
     tmp.toBlob(b=>{
       shotBlob = b;
       shotImg.src = URL.createObjectURL(b);
@@ -842,7 +928,6 @@ document.getElementById('shareBtn').onclick = async ()=>{
     const a = document.createElement('a');
     a.href = URL.createObjectURL(shotBlob); a.download = 'funhouse.jpg'; a.click();
   } else {
-    /* a download link here would launch the system file viewer over the app */
     document.querySelector('.sheet p').textContent = 'Press and hold the picture, then Add to Photos';
   }
 };
