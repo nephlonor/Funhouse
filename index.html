@@ -6,6 +6,14 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Funhouse — live face filters</title>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 <style>
   :root{
     --ink:#170C1B;
@@ -216,7 +224,20 @@ const MASKS = [
   { id:16, g:'🌸', n:'flowers'   },
   { id:17, g:'😍', n:'heart eyes'},
   { id:18, g:'🤩', n:'star eyes' },
+  { id:19, g:'🦊', n:'fox 3D'    },
 ];
+
+/* Worn full-head glTF models (loaded at runtime). Add entries here to wire in
+   more downloaded models — drop a .glb in /models and point url at it, or use a
+   CORS-enabled CDN url. fit = target size in face-width units; rotY/x/y/z place
+   it on the head; anim picks the animation clip to idle-play. */
+const GLTF_SPEC = {
+  19: {
+    /* Fox — model CC0 (PixelMannen), rig/anim CC-BY 4.0 (Tom Kranis), via three.js */
+    url:'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Fox/glTF-Binary/Fox.glb',
+    fit:2.6, rotY:Math.PI, x:0, y:1.15, z:0, anim:0
+  }
+};
 
 const state = { warp:1, mask:0, facing:'user', mirror:true };
 
@@ -588,7 +609,7 @@ async function loadThree(){
   if(threeReady || threeLoading) return;
   threeLoading = true;
   try{
-    THREE = await import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js');
+    THREE = await import('three');
     renderer = new THREE.WebGLRenderer({ canvas:TC, alpha:true, antialias:true, preserveDrawingBuffer:true });
     renderer.setPixelRatio(1);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -621,10 +642,49 @@ function resizeThree(){
   camera.updateProjectionMatrix();
 }
 
+/* lazy glTF loader (bare "three" specifiers resolved by the import map) */
+let GLTFLoaderClass = null;
+async function ensureGLTFLoader(){
+  if(!GLTFLoaderClass){
+    const m = await import('three/addons/loaders/GLTFLoader.js');
+    GLTFLoaderClass = m.GLTFLoader;
+  }
+  return new GLTFLoaderClass();
+}
+
+/* load a worn-head model into a wrapper group, normalised to face-width units */
+function loadGLTFInto(wrapper, spec){
+  ensureGLTFLoader().then(loader=>{
+    loader.load(spec.url, (gltf)=>{
+      const obj = gltf.scene;
+      const box = new THREE.Box3().setFromObject(obj);
+      const size = new THREE.Vector3(); box.getSize(size);
+      const center = new THREE.Vector3(); box.getCenter(center);
+      const s = (spec.fit || 2.4) / Math.max(size.x, size.y, size.z, 1e-4);
+      obj.traverse(o=>{ if(o.isMesh){ o.frustumCulled = false; } });
+      obj.position.sub(center);                 /* centre the model on the origin */
+      const inner = new THREE.Group();
+      inner.add(obj);
+      inner.scale.setScalar(s);
+      inner.rotation.set(spec.rotX||0, spec.rotY||0, spec.rotZ||0);
+      inner.position.set(spec.x||0, spec.y||1.0, spec.z||0);
+      wrapper.add(inner);
+      if(gltf.animations && gltf.animations.length){
+        const mixer = new THREE.AnimationMixer(obj);
+        mixer.clipAction(gltf.animations[spec.anim||0] || gltf.animations[0]).play();
+        wrapper.userData.mixer = mixer;
+      }
+    }, undefined, (err)=>{ console.warn('glTF load failed:', spec.url, err); });
+  }).catch(err=>console.warn('GLTFLoader unavailable', err));
+}
+
 /* ---- procedural character rigs (units of face-width, origin at nose tip;
         +x = subject right, +y = up, +z = out of face toward camera) ---- */
 function buildModel(id){
   const T = THREE, g = new T.Group();
+
+  /* worn full-head glTF models load asynchronously into an empty wrapper */
+  if(GLTF_SPEC[id]){ loadGLTFInto(g, GLTF_SPEC[id]); return g; }
   const SPH=new T.SphereGeometry(1,28,20), CON=new T.ConeGeometry(1,1,26),
         CYL=new T.CylinderGeometry(1,1,1,26), TOR=new T.TorusGeometry(1,0.28,16,44),
         BOX=new T.BoxGeometry(1,1,1);
@@ -844,7 +904,7 @@ function computeTarget(sx, sy){
   return { pos:n, quat, scale };
 }
 
-function updateChar(sx, sy){
+function updateChar(sx, sy, dt){
   if(!renderer) return;
   if(state.mask && threeReady){
     if(!models[state.mask]){ models[state.mask]=buildModel(state.mask); scene.add(models[state.mask]); }
@@ -861,6 +921,7 @@ function updateChar(sx, sy){
     } else {
       g.visible = false;
     }
+    if(g.visible && g.userData.mixer) g.userData.mixer.update(dt || 0);
   } else {
     for(const k in models) models[k].visible = false;
   }
@@ -877,9 +938,10 @@ addEventListener('resize', resize);
 addEventListener('orientationchange', ()=>setTimeout(resize, 250));
 
 /* ---------- render loop ---------- */
-let t0 = performance.now(), frames = 0, fpsT = t0, pending = null;
+let t0 = performance.now(), frames = 0, fpsT = t0, pending = null, lastNow = t0;
 function loop(now){
   requestAnimationFrame(loop);
+  const dt = Math.min(0.05, (now - lastNow)/1000); lastNow = now;
   if(V.readyState < 2 || !V.videoWidth) return;
   resize();
 
@@ -905,7 +967,7 @@ function loop(now){
   gl.uniform1f(uni.has, F.has);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  updateChar(sx, sy);
+  updateChar(sx, sy, dt);
 
   if(pending){ const fn = pending; pending = null; fn(); }
 
